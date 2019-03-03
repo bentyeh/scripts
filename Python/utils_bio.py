@@ -1,6 +1,38 @@
-import io, re
+# add path of this file (e.g., a scripts directory) to sys.path
+import sys, os
+sys.path.append(os.path.dirname(__file__))
+
+import io, re, warnings
+from collections.abc import Iterable
+from multiprocessing import Pool
+
 import pandas as pd
-import utils_files
+import Bio.Entrez
+
+import utils_files, utils
+
+# region --- General bioinformatics tools
+
+def rcindex(index, length):
+    '''
+    Get the position of `index` for a reverse-complemented sequence of length `length`.
+    
+    Example: str(Bio.Seq.Seq(seq[index]).complement()) == seq.reverse_complement()[RCIndex(index, len(seq))]
+    '''
+    return length - index - 1
+
+# endregion --- General bioinformatics tools
+
+# region --- File type columns
+
+BED_COLNAMES = ['chrom', 'chromStart', 'chromEnd', 'name', 'score', 'strand', 'thickStart', 'thickEnd',
+                'itemRgb', 'blockCount', 'blockSizes', 'blockStarts']
+
+GFF3_COLNAMES = ['seqid', 'source', 'type', 'start', 'end', 'score', 'strand', 'phase', 'attributes']
+
+# endregion --- File type columns
+
+# region --- FASTA tools
 
 ## FASTA Header Parsers ##
 
@@ -157,7 +189,7 @@ def parseUniProtHeader(header, header_prefix='>'):
     split = re.split(r'GN=(?P<gn>.*)(?=\sPE=)\s+', header)
     m_gn = ''
     if len(split) not in [1,3]:
-        raise
+        raise ValueError
     if len(split) > 1:
         m_gn = split[1]
         header = split[0] + split[2]
@@ -229,7 +261,7 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
         # convert str to int if applicable
         for key, value in data.items():
             value = value.strip()
-            if isint(value):
+            if utils.isint(value):
                 value = int(value)
             data[key] = value
     else:
@@ -289,78 +321,167 @@ def fastaToDF(file, save='', header_prefix='>', headerParser=parseUniProtHeader,
     df = pd.DataFrame(entries)
     return df
 
-def searchNCBIGeneNames(term, email, useSingleIndirectMatch = True):
+# endregion --- FASTA tools
+
+# region --- BED tools
+
+def bedSort(bed, tmpColName='chrom_mod'):
     '''
-    Search official human gene names and aliases in NCBI Gene database for a match to term, returning offical names and IDs.
+    Sort a BED file by chrom, chromStart, chromEnd numerically then lexicographically
+
+    Args
+    - bed: pandas.DataFrame
+        BED table, must contain columns chrom, chromStart, and chromEnd.
+        Assumes UCSC chromosome format: chr1, chr2, ...
+    - tmpColName: str. default='chrom_mod'
+        Temporary column name to use for sorting.
+
+    Returns: pandas.DataFrame
+      Sorted BED table
+    
+    TODO: Handle other chromosome naming formats.
+    '''
+
+    def pad_fn(x):
+        '''
+        Pad 0 to single-digit chromosomes: chr# --> chr0#
+        '''
+        if x[3:].isdigit() and int(x[3:]) < 10:
+            return 'chr0' + x[3:]
+        else:
+            return x
+
+    bed['chrom_mod'] = bed['chrom'].map(pad_fn)
+    bed = bed.sort_values(by=['chrom_mod', 'chromStart', 'chromEnd']).drop('chrom_mod', axis=1)
+    return bed
+
+# endregion --- BED tools
+
+# region --- Database identifier conversion tools
+
+## NCBI
+
+def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=True, verbose=True, **kwargs):
+    '''
+    Search official human gene names and aliases in NCBI Gene database for a match to term, returning official IDs,
+    names, and aliases.
+
     Dependencies: Biopython
     
-    Args:
-    - term: str
-        gene name / alias
-    - email: str
-        email registered with NCBI
-    - useSingleIndirectMatch
-        If the Entrez Gene Database query returns only 1 NCBI Gene ID, even if the term does not exactly match the gene symbol
-        or an alias, use the match.
+    Args
+    - term: iterable of str
+        Gene name / alias
+    - email: str. default=None
+        Email registered with NCBI. If not None, sets Bio.Entrez.email. If Bio.Entrez.email is None, defaults to
+        'A.N.Other@example.com'.
+    - useDefaults: bool. default=True
+        Apply the following fields to the query:
+        - orgn: 'Homo sapiens'
+        - prop: 'alive'
+    - useSingleIndirectMatch: bool. default=True
+        If the Entrez Gene Database query returns only 1 NCBI Gene ID, use the match even if the
+        term does not exactly match the gene symbol or an alias.
+    - verbose: bool. default=True
+        Print submitted query.
+    - kwargs
+        Additional fields to add to the query. If multiple values are given, an OR relationship is assumed.
+        Use keyword 'verbatim' to directly add text to append to the query.
+        Common fields: chr (Chromosome), go (Gene Ontology), pmid (PubMed ID), prop (Properties), taxid (Taxonomy ID)
+        References:
+        - https://www.ncbi.nlm.nih.gov/books/NBK3841/#_EntrezGene_Query_Tips_How_to_submit_deta_
+            Official NCBI Help page.
+        - https://www.ncbi.nlm.nih.gov/books/NBK49540/
+            Fields (and abbreviated fields) available for sequence databases (Nucleotide, Protein, EST, GSS), but most
+            of them apply to the NCBI Gene database as well.
     
-    Returns: dict: str -> list
-        "names": list of matched official gene name(s)
-        "ids": list of NCBI Gene IDs corresponding to matched official gene name(s)
+    Returns: dict: int -> dict: str -> str or list of str
+      {<NCBI Gene ID>: {'symbol': <gene symbol>, 'name': <gene name>, 'aliases': [aliases]}}
     '''
-    from Bio import Entrez
 
-    names, ids = [], []
-    Entrez.email = email
-    handle = Entrez.esearch(db="gene", term='(' + term + '[gene]) AND (Homo sapiens[orgn]) AND alive[prop] NOT newentry[gene]')
-    idList = Entrez.read(handle)['IdList']
+    # Check email registered in Biopython
+    if email is not None:
+        Bio.Entrez.email = email
+    if Bio.Entrez.email is None:
+        Bio.Entrez.email = 'A.N.Other@example.com'
+
+    # construct query parameters
+    params = {}
+    defaults = {
+        'orgn': 'Homo sapiens',
+        'prop': 'alive'
+    }
+    if useDefaults:
+        params.update(defaults)
+    params.update(kwargs)
+
+    # build query
+    query = '{}[gene]'.format(term)
+    verbatim = ''
+    if 'verbatim' in params:
+        verbatim = params.pop('verbatim')
+    for key, values in params.items():
+        if isinstance(values, str) or not isinstance(values, Iterable):
+            values = set([values])
+        query += ' AND ({})'.format(' OR '.join(['{}[{}]'.format(value, key) for value in values]))
+    query += verbatim
+    if verbose:
+        print(query)
+    
+    # initialize return variable
+    matches = {}
+
+    # submit query
+    handle = Bio.Entrez.esearch(db="gene", term=query)
+    idList = Bio.Entrez.read(handle)['IdList']
     for id in idList:
-        handle = Entrez.esummary(db='gene', id=id)
-        record = Entrez.read(handle)
-        name = record['DocumentSummarySet']['DocumentSummary'][0]['Name']
+        handle = Bio.Entrez.esummary(db='gene', id=id)
+        record = Bio.Entrez.read(handle)
+        symbol = record['DocumentSummarySet']['DocumentSummary'][0]['Name']
+        name = record['DocumentSummarySet']['DocumentSummary'][0]['Description']
         aliases = record['DocumentSummarySet']['DocumentSummary'][0]['OtherAliases'].split(', ')
-        if (term in [name] + aliases):
-            names.append(name)
-            ids.append(id)
-    if useSingleIndirectMatch:
-        if len(names) == 0 and len(idList) == 1:
-            ids.append(idList[0])
-            handle = Entrez.esummary(db='gene', id=id)
-            record = Entrez.read(handle)
-            names.append(record['DocumentSummarySet']['DocumentSummary'][0]['Name'])
-    return({"names": names, "ids": ids})
+        terms = [match.lower() for match in [name] + aliases]
+        if (term.lower() in terms):
+            matches[id] = int(id)
+            matches[id] = {'symbol': symbol, 'name': name, 'aliases': aliases}
+    if useSingleIndirectMatch and len(matches) == 0 and len(idList) == 1:
+        handle = Bio.Entrez.esummary(db='gene', id=id)
+        record = Bio.Entrez.read(handle)
+        symbol = record['DocumentSummarySet']['DocumentSummary'][0]['Name']
+        name = record['DocumentSummarySet']['DocumentSummary'][0]['Description']
+        aliases = record['DocumentSummarySet']['DocumentSummary'][0]['OtherAliases'].split(', ')
+        matches[id] = {'symbol': symbol, 'name': name, 'aliases': aliases}
+        if verbose:
+            print(f'{term} failed to match any name or alias, returning the single unique result provided by Entrez.')
+    return matches
 
-def mtSearchNCBIGeneNames(terms, email, nThreads = None):
+def multisearch_NCBIGene(terms, nProc=None, **kwargs):
     '''
     Search official human gene names and aliases in NCBI Gene database for terms.
     
     Args
-    - terms: list of str
-        terms to lookup
+    - terms: iterable of str
+        Terms to lookup
     - email: str
         email registered with NCBI
-    - nThreads: int
-        None: Uses a ThreadPool of a default number of threads as returned by os.cpu_count()
-        1+: Uses a ThreadPool of nThreads
+    - nProc: int. default=None
+        Number of processes to use. If None, uses as many processes as available CPUs.
     
-    Returns: list of str
-      Where no matches found, returns the empty string. Otherwise, returns the first matched official gene symbol.
+    Returns: dict: str -> dict: int -> dict: str -> str or list of str
+      {<term>: <NCBI Gene ID>: {'symbol': <gene symbol>, 'name': <gene name>, 'aliases': [aliases]}}
     '''
-    from multiprocessing.pool import ThreadPool
-    
-    dict_results = []
-    gene_symbols = []
-    pool = ThreadPool(nThreads)
-    print("Using {:d} threads...".format(pool._processes))
-    for i in range(len(terms)):
-        dict_results.append(pool.apply_async(searchNCBIGeneNames, (terms[i], email)))
-    pool.close()
-    pool.join()
-    for i in range(len(terms)):
-        match = dict_results[i].get()
-        if len(match["names"]) == 0:
-            gene_symbols.append("")
-        elif terms[i] in match["names"]:
-            gene_symbols.append(terms[i])
-        else:
-            gene_symbols.append(match["names"][0])
-    return(gene_symbols)
+
+    if nProc is None:
+        try:
+            nProc = len(os.sched_getaffinity(0))
+        except AttributeError:
+            warnings.warn('Unable to get accurate number of available CPUs. Assuming all CPUs are available.')
+            nProc = os.cpu_count()
+    assert isinstance(nProc, int) and nProc > 0
+
+    results = []
+    with Pool(processes=nProc) as pool:
+        for i in range(len(terms)):
+            results.append(pool.apply_async(search_NCBIGene, (terms[i],), kwargs))
+        return {terms[i]: results[i].get() for i in range(len(terms))}
+
+# endregion --- Database identifier conversion tools
