@@ -75,7 +75,7 @@ def parseDefaultHeader(header, header_prefix='>'):
     data = m.groupdict()
     
     # strip whitespace from dict values
-    data = {key: value.strip() for key, value in data.items() if value is not None}
+    data = {key: value.strip() for key, value in data.items() if value is not ''}
     return data
 
 def parseEnsemblPepHeader(header, header_prefix='>'):

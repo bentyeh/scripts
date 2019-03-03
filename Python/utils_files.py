@@ -22,11 +22,22 @@ def createFileObject(file, mode=None):
         f = open(file, mode=mode)
     return f
 
-def readFile(file):
+def readFile(file, strip=None):
     '''
     Reads entire file and returns lines as a list.
+
+    Args
+    - file: str
+        Path to file. If extension ends with '.gz', gzip compression is assumed.
+    - strip: str. default=None.
+        Parameter to str.strip() applied to each read line.
+        - None: strip whitespace
+        - '': do not strip
+    
+    Returns: list of str
+      Each element in the list is a line from the file.
     '''
     
     with createFileObject(file) as f:
-        contents = f.read().splitlines()
+        contents = f.read().strip(strip).splitlines()
     return contents
