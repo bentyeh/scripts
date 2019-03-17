@@ -81,7 +81,20 @@ FASTA_HEADER_REGEX_UNIPROT = re.compile(
     r'SV=(?P<sv>.*)'
 )
 
-def parseDefaultHeader(header, header_prefix='>'):
+FASTA_HEADER_REGEX_SGD = re.compile(
+    r'(?P<systematic_name>[^\s]+)\s+' +
+    r'(?P<standard_name>[^\s]+)\s+'
+    r'SGDID:(?P<SGDID>[^,]+),\s+' +
+    r'(Chr )?(?P<chromosome>.+?(?= from))\s+from\s+' +
+    r'(?P<start>\d+)-(\d+,\d+[-])*' +
+    r'(?P<end>\d+),\s+' +
+    r'(Genome Release (?P<release>[^,]+),\s+)?' +
+    r'(?P<strand>(reverse complement)?)(,\s+)?' +
+    r'(?P<status>[^,]+)' +
+    r'(,\s+"(?P<description>[^"]+)")?'
+)
+
+def parseDefaultHeader(header, header_prefix='>', r=FASTA_HEADER_REGEX_DEFAULT):
     '''
     Parse FASTA header.
     
@@ -102,12 +115,16 @@ def parseDefaultHeader(header, header_prefix='>'):
         header = header[len(header_prefix):]
     
     # extract key, value pairs from regex match to dict
-    p = FASTA_HEADER_REGEX_DEFAULT
-    m = p.match(header)
-    data = m.groupdict()
+    try:
+        m = r.match(header)
+        data = m.groupdict()
     
-    # strip whitespace from dict values
-    data = {key: value.strip() for key, value in data.items() if value is not ''}
+        # strip whitespace from dict values
+        data = {key: value.strip() for key, value in data.items() if value not in ('', None)}
+    except AttributeError as err:
+        print(f"No match found with header: {header}")
+        data = {}
+
     return data
 
 def parseEnsemblPepHeader(header, header_prefix='>'):
@@ -177,7 +194,16 @@ def parseUniProtHeader(header, header_prefix='>'):
     
     Returns: dict
     - Map of metadata of protein sequence.
-      Keys: db, id, uniprotName, proteinName, os, ox, gn (may be empty), pe, sv
+    - Keys:
+      - db: 'sp' for UniProtKB/Swiss-Prot and 'tr' for UniProtKB/TrEMBL
+      - id: primary accession number of the UniProtKB entry (e.g., P01308)
+      - uniprotName: [EntryName] entry name of the UniProtKB entry (e.g., INS_HUMAN)
+      - proteinName: [ProteinName] recommended name of the UniProtKB entry as annotated in the RecName field (e.g., Insulin)
+      - os: [OrganismName] scientific name of the organism of the UniProtKB entry
+      - ox: [OrganismIdentifier] unique identifier of the source organism, assigned by the NCBI
+      - gn: [GeneName] first gene name of the UniProtKB entry (may be empty
+      - pe: [ProteinExistence] numerical value describing the evidence for the existence of the protein
+      - sv: [SequenceVersion] version number of the sequence
     '''
     
     # strip whitespace and prefix
@@ -268,7 +294,7 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
         data = {key: value.strip() for key, value in data.items()}
     return data
 
-def fastaToDF(file, save='', header_prefix='>', headerParser=parseUniProtHeader, **kwargs):
+def fastaToDF(file, save='', header_prefix='>', headerParser=parseDefaultHeader, **kwargs):
     '''
     Parse FASTA file into pandas DataFrame.
     
