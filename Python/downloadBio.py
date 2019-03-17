@@ -12,7 +12,7 @@ import requests
 import utils_files
 import utils_bio
 
-### UniProt ###
+# region --- UniProt
 
 def get_UniProt(uniprot_id, export, toDf=True):
     '''
@@ -46,7 +46,9 @@ def get_UniProt(uniprot_id, export, toDf=True):
     else:
         return r.text
 
-### InterPro ###
+# endregion --- UniProt
+
+# region --- InterPro
 
 URL_InterPro_protein = 'https://www.ebi.ac.uk/interpro/protein/'
 
@@ -116,7 +118,9 @@ def process_InterPro_GOmap(path):
             result.append(data)
     return pd.DataFrame(result)
 
-### QuickGO ###
+# endregion --- InterPro
+
+# region --- QuickGO
 
 GO_RELATIONS = ['is_a', 'part_of', 'occurs_in', 'regulates']
 
@@ -449,3 +453,5 @@ def get_QuickGO_secondaryIds(goIds):
         if 'secondaryIds' in responseBody['results'][i]:
             secondaryIds.extend(responseBody['results'][i]['secondaryIds'])
     return set(secondaryIds)
+
+# endregion --- QuickGO
