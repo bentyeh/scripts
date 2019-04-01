@@ -26,7 +26,11 @@ arrayToDf = function(ar) {
     nullDimNames = 1:ndims
   } else {
     nullDims = which(sapply(dimnames(ar), is.null))
-    nullDimNames = which(sapply(names(dimnames(ar)), function(x) identical(x, "")))
+    if (is.null(names(dimnames(ar)))) {
+      nullDimNames = 1:ndims
+    } else {
+      nullDimNames = which(sapply(names(dimnames(ar)), function(x) identical(x, "")))
+    }
   }
   namedDims = setdiff(1:ndims, nullDims)
   
