@@ -121,8 +121,12 @@ def parseDefaultHeader(header, header_prefix='>', r=FASTA_HEADER_REGEX_DEFAULT):
     
         # strip whitespace from dict values
         data = {key: value.strip() for key, value in data.items() if value not in ('', None)}
-    except AttributeError as err:
-        print(f"No match found with header: {header}")
+    except AttributeError:
+        print(f"Failed to match header: {header}")
+        data = {}
+    except Exception as err:
+        print(f"Failed to parse header: {header}")
+        print(f"Error: {err}")
         data = {}
 
     return data
