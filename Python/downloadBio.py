@@ -185,7 +185,7 @@ def parse_QuickGO_JSON(results):
     return df
 
 def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse=True,
-                            attempts=5, sleep=0.5, nThreads=1, **kwargs):
+                            attempts=5, sleep=0.5, nProc=1, **kwargs):
     '''
     Download annotations from QuickGO. See https://www.ebi.ac.uk/QuickGO/api/index.html.
     
@@ -215,8 +215,8 @@ def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse
         Number of attempts to retry a request upon error
     - sleep: float. default=0.5
         Seconds to sleep for in between each attempt
-    - nThreads: int. default=1
-        Number of threads to use. Error handling is not implemented if nThreads > 1.
+    - nProc: int. default=1
+        Number of processes to use. Error handling is not implemented if nProc > 1.
     - **kwargs
         Additional parameters to pass to send in the body of the HTTP request
     
@@ -232,7 +232,7 @@ def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse
     
     # validate arguments
     assert(type(attempts) is int and attempts > 0)
-    assert(not(nThreads > 1 and method == 'download'))
+    assert(not(nProc > 1 and method == 'download'))
     assert(method in ['search', 'download', 'opt'])
     
     if method in ['search', 'opt']:
@@ -259,7 +259,7 @@ def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse
         params.update(defaults)
     params.update(kwargs)
     
-    (r, attempts_remaining) = getQuickGO_helper(url, params, headers, method, attempts, sleep)
+    (r, attempts_remaining) = _get_QuickGO_helper(url, params, headers, method, attempts, sleep)
     if attempts_remaining > 0:
         allResponses = [r]
     else:
@@ -283,12 +283,12 @@ def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse
             return get_QuickGO_annotations(goIds, useDefaults, 'download', parseResponse, **kwargs)
         
         params['page'] += 1
-        if nThreads > 1:
-            allResponses.extend(getQuickGO_mt(url, params, headers, attempts, sleep, nThreads,
-                                              pages=range(params['page'],totalPages+1)))
+        if nProc > 1:
+            allResponses.extend(_get_QuickGO_mt(url, params, headers, attempts, sleep, nProc,
+                                                pages=range(params['page'],totalPages+1)))
         else:
             while True:
-                (r, attempts_remaining) = getQuickGO_helper(url, params, headers, attempts, sleep)
+                (r, attempts_remaining) = _get_QuickGO_helper(url, params, headers, attempts, sleep)
                 if attempts_remaining > 0:
                     allResponses.append(r)
                 else:
@@ -303,7 +303,7 @@ def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse
     else:
         return allResponses
 
-def getQuickGO_helper(url, params, headers, method, attempts=5, sleep=0.5):
+def _get_QuickGO_helper(url, params, headers, method, attempts=5, sleep=0.5):
     '''
     Returns: (request.Response, int)
       HTTP response and unused attempts
@@ -330,52 +330,27 @@ def getQuickGO_helper(url, params, headers, method, attempts=5, sleep=0.5):
     
     return (r, attempts)
 
-def getQuickGO_mt(url, params, headers, attempts, sleep, nThreads, pages):
+def _get_QuickGO_mt(url, params, headers, attempts, sleep, nProc, pages):
     '''
-    Multithreaded implementation of getQuickGO(method='search') without error handling
+    Multiprocess implementation of getQuickGO(method='search') without error handling
     '''
     
-    pool = Pool(nThreads)
-    print("Using {:d} threads...".format(pool._processes))
-    sleep = max(sleep, 0.1*nThreads)
-    
-    allResponses = []
-    for i in pages:
-        params.update({'page': i})
-        allResponses.append(pool.apply_async(getQuickGO_helper,
-                                             (url, params, headers, 'search', attempts, sleep)))
-    pool.close()
-    pool.join()
+    with Pool(nProc) as pool:
+        print("Using {:d} processes...".format(pool._processes))
+        sleep = max(sleep, 0.1*nProc)
+
+        allResponses = []
+        for i in pages:
+            params.update({'page': i})
+            allResponses.append(pool.apply_async(_get_QuickGO_helper,
+                                                 (url, params, headers, 'search', attempts, sleep)))
+        pool.close()
+        pool.join()
     
     for i in range(len(allResponses)):
         allResponses[i] = allResponses[i].get()
     
     return allResponses
-
-def processQuickGO(df, save='', **kwargs):
-    '''
-    Process annotations returned by QuickGO such that
-    1. there is only one entry per gene name
-    2. there is only one entry per UniProtKB Accession ID
-    
-    Args:
-    - df: pandas.DataFrame
-    - save: str. default=''
-        Path to save DataFrame
-    - **kwargs
-        Additional keyword arguments to pass to pandas.DataFrame.to_csv() if saving DataFrame.
-    
-    Returns: pandas.DataFrame
-    '''
-    
-    df = df[~df.duplicated(subset=['GENE PRODUCT ID', 'SYMBOL']).values]
-    assert(~any(df.duplicated(subset='GENE PRODUCT ID')))
-    assert(~any(df.duplicated(subset='SYMBOL')))
-    
-    if save is not '':
-        df.to_csv(save, **kwargs)
-    
-    return df
 
 def get_QuickGO_descendants(goIds, relations=GO_RELATIONS, depth=-1, dset=set()):
     '''
