@@ -123,7 +123,7 @@ def parseDefaultHeader(header, header_prefix='>', pattern=FASTA_HEADER_REGEX_DEF
     
     # extract key, value pairs from regex match to dict
     try:
-        m = r.match(header)
+        m = pattern.match(header)
         data = m.groupdict()
     
         # strip whitespace from dict values
