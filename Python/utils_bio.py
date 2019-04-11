@@ -37,39 +37,39 @@ GFF3_COLNAMES = ['seqid', 'source', 'type', 'start', 'end', 'score', 'strand', '
 ## FASTA Header Parsers ##
 
 FASTA_HEADER_REGEX_DEFAULT = re.compile(
-    r'(?P<name>[^\s]+)\s*' +
+    r'(?P<name>\S+)\s*' +
     r'(?P<desc>.*)'
 )
 
 FASTA_HEADER_REGEX_ENSEMBL_PEPTIDE = re.compile(
-    r'(?P<id>[^\s]+)\s+' +
+    r'(?P<id>\S+)\s+' +
     r'(?P<seqtype>[^:\s]+)' +
-    r'(?P<status>[^\s]*)\s+' + 
+    r'(:(?P<status>\S+))?\s+' + 
     r'(?P<coord_system>[^:]+):'
     r'(?P<version>[^:]+):' +
     r'(?P<name>[^:]+):' +
     r'(?P<start>[^:]+):' +
     r'(?P<end>[^:]+):' +
-    r'(?P<strand>[^\s]+)\s+' +
-    r'gene:(?P<gene>[^\s]+)\s+' +
-    r'transcript:(?P<transcript>[^\s]+)\s*' +
-    r'(gene_biotype:(?P<gene_biotype>[^\s]+)\s*)*' +
-    r'(transcript_biotype:(?P<transcript_biotype>[^\s]+)\s*)*' +
-    r'(gene_symbol:(?P<gene_symbol>[^\s]+)\s*)*' +
+    r'(?P<strand>\S+)\s+' +
+    r'gene:(?P<gene>\S+)\s+' +
+    r'transcript:(?P<transcript>\S+)\s*' +
+    r'(gene_biotype:(?P<gene_biotype>\S+)\s*)*' +
+    r'(transcript_biotype:(?P<transcript_biotype>\S+)\s*)*' +
+    r'(gene_symbol:(?P<gene_symbol>\S+)\s*)*' +
     r'(description:(?P<description>[^[]+)\s*)*' +
     r'(\[Source:(?P<source>[^;]+);)*' +
     r'(Acc:(?P<accession>[^]]+)\])*'
 )
 
 FASTA_HEADER_REGEX_UCSC = re.compile(
-    r'(?P<name>[^\s]+)\s+' +
+    r'(?P<name>\S+)\s+' +
     r'range=(?P<chrom>[^:\s]+):' +
     r'(?P<chromStart>[^-]+)-' + 
-    r'(?P<chromEnd>[^\s]+)\s+' + 
-    r'5\'pad=(?P<pad5>[^\s]+)\s+' +
-    r'3\'pad=(?P<pad3>[^\s]+)\s+' + 
-    r'strand=(?P<strand>[^\s]+)\s+' + 
-    r'repeatMasking=(?P<repeatMasking>[^\s]+).*'
+    r'(?P<chromEnd>\S+)\s+' + 
+    r'5\'pad=(?P<pad5>\S+)\s+' +
+    r'3\'pad=(?P<pad3>\S+)\s+' + 
+    r'strand=(?P<strand>\S+)\s+' + 
+    r'repeatMasking=(?P<repeatMasking>\S+).*'
 )
 
 FASTA_HEADER_REGEX_UNIPROT = re.compile(
@@ -81,9 +81,9 @@ FASTA_HEADER_REGEX_UNIPROT = re.compile(
     r'SV=(?P<sv>.*)'
 )
 
-FASTA_HEADER_REGEX_SGD = re.compile(
-    r'(?P<systematic_name>[^\s]+)\s+' +
-    r'(?P<standard_name>[^\s]+)\s+'
+FASTA_HEADER_REGEX_SGD_PROTEIN = re.compile(
+    r'(?P<systematic_name>\S+)\s+' +
+    r'(?P<standard_name>\S+)\s+'
     r'SGDID:(?P<SGDID>[^,]+),\s+' +
     r'(Chr )?(?P<chromosome>.+?(?= from))\s+from\s+' +
     r'(?P<start>\d+)-(\d+,\d+[-])*' +
@@ -94,7 +94,7 @@ FASTA_HEADER_REGEX_SGD = re.compile(
     r'(,\s+"(?P<description>[^"]+)")?'
 )
 
-def parseDefaultHeader(header, header_prefix='>', r=FASTA_HEADER_REGEX_DEFAULT):
+def parseDefaultHeader(header, header_prefix='>', pattern=FASTA_HEADER_REGEX_DEFAULT):
     '''
     Parse FASTA header.
     
@@ -103,11 +103,18 @@ def parseDefaultHeader(header, header_prefix='>', r=FASTA_HEADER_REGEX_DEFAULT):
         FASTA header line
     - header_prefix: str. default='>'
         FASTA header line prefix
+    - pattern: str or re.Pattern. default=FASTA_HEADER_REGEX_DEFAULT
+        Regex pattern with grouped names
     
     Returns: dict
     - Map of metadata of protein sequence.
-    - Keys: name, desc
+    - Keys: depends on `pattern`
     '''
+    
+    # process and validate `pattern` argument
+    if isinstance(pattern, str):
+        pattern = re.compile(pattern)
+    assert isinstance(pattern, re.Pattern)
 
     # strip whitespace and prefix
     header = header.strip()
@@ -131,15 +138,9 @@ def parseDefaultHeader(header, header_prefix='>', r=FASTA_HEADER_REGEX_DEFAULT):
 
     return data
 
-def parseEnsemblPepHeader(header, header_prefix='>'):
+def parseEnsemblPepHeader(header, **kwargs):
     '''
-    Parse Ensembl Peptide FASTA header.
-    
-    Args
-    - header: str
-        FASTA header line
-    - header_prefix: str. default='>'
-        FASTA header line prefix
+    Parse Ensembl Peptide FASTA header. Wrapper for parseDefaultHeader().
     
     Returns: dict
     - Map of metadata of protein sequence.
@@ -172,19 +173,32 @@ def parseEnsemblPepHeader(header, header_prefix='>'):
       the LOCATION (e.g., 'chromosome:NCBI35:1:904515:910768:1') attribute.
     '''
     
-    # strip whitespace and prefix
-    header = header.strip()
-    if header.startswith(header_prefix):
-        header = header[len(header_prefix):]
+    return parseDefaultHeader(header, pattern=FASTA_HEADER_REGEX_ENSEMBL_PEPTIDE, **kwargs)
+
+def parseSGDProteinHeader(header, **kwargs):
+    '''
+    Parse SGD Protein FASTA header. Wrapper for parseDefaultHeader().
     
-    # extract key, value pairs from regex match to dict
-    p = FASTA_HEADER_REGEX_ENSEMBL_PEPTIDE
-    m = p.match(header)
-    data = m.groupdict()
+    Returns: dict
+    - Map of metadata of protein sequence.
+    - Keys: not all may be present
+      - systematic_name: systematic name
+      - standard_name: standard name
+      - SGDID: SGD unique identifier
+      - chromosome: chromsome
+      - start: start coordinate
+      - end: end coordinate
+      - release: genome version
+      - strand: strandedness (reverse complement, NA)
+      - status: "Verified", "Uncharacterized", or "Dubious"
+      - description: description
     
-    # strip whitespace from dict values
-    data = {key: value.strip() for key, value in data.items() if value is not None}
-    return data
+    References
+    - Yeast ORF naming conventions: https://sites.google.com/view/yeastgenome-help/sgd-general-help/glossary
+    - Yeast ORF statuses: https://downloads.yeastgenome.org/sequence/S288C_reference/orf_protein/orf_protein.README
+    '''
+    
+    return parseDefaultHeader(header, pattern=FASTA_HEADER_REGEX_SGD_PROTEIN, **kwargs)
 
 def parseUniProtHeader(header, header_prefix='>'):
     '''
@@ -225,8 +239,8 @@ def parseUniProtHeader(header, header_prefix='>'):
         header = split[0] + split[2]
     
     # extract key, value pairs from regex match to dict
-    p = FASTA_HEADER_REGEX_UNIPROT
-    m = p.match(header)
+    pattern = FASTA_HEADER_REGEX_UNIPROT
+    m = pattern.match(header)
     data = m.groupdict()
     
     # add gene name if present
@@ -242,7 +256,7 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
 
     Example: hg38_knownGene_ENST00000376838.5_0 range=chr1:11130526-11131568 5'pad=10 3'pad=3 strand=- repeatMasking=none
     
-    Args:
+    Args
     - header: str
         FASTA header line
     - header_prefix: str. default='>'
@@ -278,8 +292,8 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
         header = header[len(header_prefix):]
     
     # extract key, value pairs from regex match to dict
-    p = FASTA_HEADER_REGEX_UCSC
-    m = p.match(header)
+    pattern = FASTA_HEADER_REGEX_UCSC
+    m = pattern.match(header)
     data = m.groupdict()
 
     if retainKeys:
