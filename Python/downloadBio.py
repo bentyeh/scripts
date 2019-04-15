@@ -14,23 +14,22 @@ import utils_bio
 
 # region --- UniProt
 
-def get_UniProt(uniprot_id, export, toDf=True):
+def get_UniProt(uniprot_id, export, toDf=False):
     '''
     Get UniProt entry.
     
     Args
     - uniprot_id: str
-        UniProt Accession ID (e.g., P12345)
+        UniProt Accession ID (e.g., P12345).
     - export: str.
         Format: 'txt', 'fasta', 'xml', 'rdf', 'gff'
-    - toDf: bool. default=True
+    - toDf: bool. default=False
         Parse data into a pandas.DataFrame. Currently only 'fasta' and 'gff' export types are supported.
     
     Returns: str or pandas.DataFrame
     '''
     
     assert export in ('txt', 'fasta', 'xml', 'rdf', 'gff')
-    
     url = 'https://www.uniprot.org/uniprot/{}.{}'.format(uniprot_id, export)
     headers = {'accept': 'text/html'}
     r = requests.get(url=url, headers=headers)
@@ -45,6 +44,35 @@ def get_UniProt(uniprot_id, export, toDf=True):
                                names=utils_bio.GFF3_COLNAMES, index_col=False)
     else:
         return r.text
+
+def get_Proteins(url='https://www.ebi.ac.uk/proteins/api/proteins', export='fasta', **kwargs):
+    '''
+    Retrieve UniProt protein entries using the Proteins API.
+    
+    Args
+    - export: str. default='fasta'
+        Format: 'fasta', 'json', 'xml', or 'flat' (UniProt text format)
+    - **kwargs:
+        GET parameters. Common parameters listed below:
+        - accession: comma-separated UniProt accessions, up to 100
+        - offset: page starting point, default=0
+        - size: page size, default=100. If -1, returns all records and offset will be ignored
+    
+    Returns: str
+    
+    Reference: https://www.ebi.ac.uk/proteins/api/doc/
+    '''
+    
+    headers = {'fasta': 'text/x-fasta',
+               'json': 'application/json',
+               'xml': 'application/xml',
+               'flat': 'text/x-flatfile'}
+    
+    r = requests.get(url, params=kwargs, headers={'Accept': headers[export]})
+
+    if not r.ok:
+        r.raise_for_status()
+    return r.text
 
 # endregion --- UniProt
 
