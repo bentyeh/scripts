@@ -8,6 +8,7 @@ from multiprocessing import Pool
 
 import pandas as pd
 import Bio.Entrez
+import requests
 
 import utils_files, utils
 
@@ -365,6 +366,32 @@ def fastaToDF(file, save='', header_prefix='>', headerParser=parseDefaultHeader,
     df = pd.DataFrame(entries)
     return df
 
+def dfToFasta(df, file=None, name_col='name', seq_col='seq', header_prefix='>'):
+    '''
+    Args
+    - df: pandas.DataFrame
+        Table of names and sequences
+    - file: str. default=None
+        Path to save FASTA file
+    - name_col: str. default='name'
+        Column to use as FASTA header
+    - seq_col: str. default='seq'
+        Column with sequences
+    - header_prefix: str. default='>'
+        FASTA header line prefix
+    '''
+    
+    if isinstance(file, str):
+        f = utils_files.createFileObject(file, 'wt')
+    elif isinstance(file, io.IOBase):
+        f = file
+    else:
+        raise ValueError('`file` must be a string or file object')
+    
+    for _, row in df.iterrows():
+        print(header_prefix + row[name_col], row[seq_col], sep='\n', end='\n\n', file=f)
+    f.close()
+
 # endregion --- FASTA tools
 
 # region --- BED tools
@@ -528,4 +555,126 @@ def multisearch_NCBIGene(terms, nProc=None, **kwargs):
             results.append(pool.apply_async(search_NCBIGene, (terms[i],), kwargs))
         return {terms[i]: results[i].get() for i in range(len(terms))}
 
+## UniProt
+
+# See https://www.uniprot.org/help/accession_numbers
+UNIPROT_ACCESSION_REGEX = re.compile(r'[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}')
+
+def convertUniProt(source, to, query, toDf=True):
+    '''
+    Convert database identifiers using UniProt's Retrieve/ID mapping service.
+    
+    Args
+    - source: str
+        Query identifier type.
+    - to: str
+        Target identifier type.
+    - query: str
+        Identifiers separated by spaces or new lines.
+    - toDf: bool. default=True
+        Return results as pandas DataFrame.
+    
+    Returns: str or pandas.DataFrame
+      UniProt's mapping service returns a tab-delimited table with column headers "From" and "To".
+      If `toDf` is True, the raw text is returned. Otherwise, it is parsed into a DataFrame.
+    
+    Reference: https://www.uniprot.org/help/api_idmapping
+    '''
+    
+    url = 'https://www.uniprot.org/uploadlists/'
+    params = {
+        'from': source,
+        'to': to,
+        'format': 'tab',
+        'query': query
+    }
+    
+    r = requests.post(url=url, data=params)
+    if not r.ok:
+        r.raise_for_status()
+    
+    if toDf:
+        return pd.read_csv(io.StringIO(r.text), sep='\t', header=0, index_col=False)
+    return r.text
+
 # endregion --- Database identifier conversion tools
+
+# region --- Sequence alignment tools
+
+## BLAST
+# 
+# Hit: entry (sequence) in target database
+# High-scoring pair (HSP): regions of significant alignment between query and hit sequences
+# 
+# BioPython Bio.Blast.NCBIXML parser
+# - Each query corresponds to a record
+# - Each record contains zero or more alignments (hits)
+# - Each alignment contains one or more HSPs
+
+def blastToDf(records):
+    '''
+    Convert BLAST records to DataFrame.
+    
+    Args
+    - records: list of Bio.Blast.Record
+        BLAST records (each record corresponds to 1 query)
+    
+    Returns: pandas.DataFrame or None (no HSPs in records)
+    - Rows: HSPs
+    - Columns
+      - align_length: int
+          alignment length
+      - bits: float
+          score (in bits)
+      - expect: float
+          E-value
+      - frame: 2-tuple of int
+          (translation frame of query, translation frame of subject)
+      - gaps: int
+          number of gaps
+      - hit_id: str
+          SeqId of subject
+          Ex: gi|930125|emb|CAA35112.1|
+      - identities: int
+          number of identities
+      - match: str
+          formating middle line
+          Ex: +ACD CRKKK+KC
+      - num_alignments: ??
+      - positives: int
+          number of positives
+      - query: str
+          alignment string for the query (with gaps)
+          Ex: RACDQCRKKKIKC
+      - query_def: str.
+          Definition line of query.
+          Ex: Rgt1p [Saccharomyces cerevisiae S288C]
+      - query_end: int.
+      - query_id: str
+          SeqId of query
+          Ex: NP_015333.1
+      - query_ start: int
+      - sbjct: str
+          alignment string for subject (with gaps)
+          Ex: QACDACRKKKLKC
+      - sbjct_end: int
+      - sbjct_start: int
+      - score: float
+      - strand: 2-tuple of ??
+    
+    Reference
+    - See https://www.ncbi.nlm.nih.gov/dtd/NCBI_BlastOutput.mod.dtd for XML DTD schema
+    '''
+    
+    hsps = [] # high-scoring pairs
+    for record in records:
+        for alignment in record.alignments:
+            for hsp in alignment.hsps:
+                d = vars(hsp)
+                d.update({'hit_id': alignment.hit_id, 'query_def': record.query, 'query_id': record.query_id})
+                hsps.append(d)
+    if len(hsps) == 0:
+        return None
+    return pd.DataFrame(hsps)
+
+# endregion --- Sequence alignment tools
