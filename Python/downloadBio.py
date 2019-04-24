@@ -14,6 +14,17 @@ import utils_bio
 
 # region --- UniProt
 
+PROTEINS_HEADERS = {
+    'xml':   'application/xml',
+    'json':  'application/json',
+    'fasta': 'text/x-fasta',
+    'flat':  'text/x-flatfile',
+    'gff':   'text/x-gff',
+    'peff':  'text/x-peff'
+}
+
+PROTEINS_BASEURL = 'https://www.ebi.ac.uk/proteins/api'
+
 def get_UniProt(uniprot_id, export, toDf=False):
     '''
     Get UniProt entry.
@@ -45,30 +56,47 @@ def get_UniProt(uniprot_id, export, toDf=False):
     else:
         return r.text
 
-def get_Proteins(url='https://www.ebi.ac.uk/proteins/api/proteins', export='fasta', **kwargs):
+def get_Proteins(service='/proteins', entry=None, export='json', verbose=False, **kwargs):
     '''
     Retrieve UniProt protein entries using the Proteins API.
+    See https://www.ebi.ac.uk/proteins/api/doc/.
     
     Args
-    - export: str. default='fasta'
-        Format: 'fasta', 'json', 'xml', or 'flat' (UniProt text format)
+    - service: str. default='/proteins'
+        Service requested through REST interface. See examples below.
+    - entry: dict. default=None
+        Desired entry for services that do not take key/value pairs. See examples below.
+    - export: str. default='json'
+        Response content type: 'fasta', 'json', 'xml', 'flat' (UniProt text format), 'gff', or 'peff'.
+        All services can return XML or JSON formatted results. Other return types are service-specific.
+    - verbose: bool. default=False
+        Print request URL.
     - **kwargs:
-        GET parameters. Common parameters listed below:
+        GET parameters (given as key/value pairs in the URL after a question mark).
+        Common parameters listed below:
         - accession: comma-separated UniProt accessions, up to 100
         - offset: page starting point, default=0
         - size: page size, default=100. If -1, returns all records and offset will be ignored
     
     Returns: str
     
-    Reference: https://www.ebi.ac.uk/proteins/api/doc/
+    Examples
+    - Request single protein entry, FASTA format
+        Desired GET request: https://www.ebi.ac.uk/proteins/api/proteins/P24928
+        --> get_Proteins(service='/proteins/{accession}', entry={'accession': 'P24928'}, export='fasta')
+    - Request multiple protein entries, JSON format
+        Desired GET request: https://www.ebi.ac.uk/proteins/api/proteins?accession=P24928,P30876
+        --> get_Proteins(service='/proteins', entry=None, export='json', accession='P24928,P30876')
     '''
     
-    headers = {'fasta': 'text/x-fasta',
-               'json': 'application/json',
-               'xml': 'application/xml',
-               'flat': 'text/x-flatfile'}
+    if re.search(r'\{.*\}', service) and entry is not None:
+        service = service.format(**entry)
+    url = PROTEINS_BASEURL + service
+    headers = {'Accept': PROTEINS_HEADERS[export]}
+    r = requests.get(url, params=kwargs, headers=headers)
     
-    r = requests.get(url, params=kwargs, headers={'Accept': headers[export]})
+    if verbose:
+        print(r.url)
 
     if not r.ok:
         r.raise_for_status()
