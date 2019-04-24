@@ -408,7 +408,7 @@ def _get_QuickGO_mt(url, params, headers, attempts, sleep, nProc, pages):
     
     return allResponses
 
-def get_QuickGO_descendants(goIds, relations=GO_RELATIONS, depth=-1, dset=set()):
+def get_QuickGO_descendants(goIds, relations=GO_RELATIONS, depth=-1, dset=None):
     '''
     Get descendant terms.
     
@@ -424,7 +424,11 @@ def get_QuickGO_descendants(goIds, relations=GO_RELATIONS, depth=-1, dset=set())
     
     Returns: set of str
     '''
+
     assert not isinstance(goIds, str) and isinstance(goIds, Iterable)
+    
+    if dset is None:
+        dset = set()
     
     if goIds <= dset or depth == 0:
         return dset | goIds
@@ -435,7 +439,7 @@ def get_QuickGO_descendants(goIds, relations=GO_RELATIONS, depth=-1, dset=set())
     
     if depth < 0:
         requestURL = f'https://www.ebi.ac.uk/QuickGO/services/ontology/go/terms/{goIds_cs}/descendants'
-        r = requests.get(requestURL, params={'relations': relations}, headers={'Accept': 'application/json'})
+        r = requests.get(requestURL, params={'relations': ','.join(relations)}, headers={'Accept': 'application/json'})
     else:
         requestURL = f'https://www.ebi.ac.uk/QuickGO/services/ontology/go/terms/{goIds_cs}/complete'
         r = requests.get(requestURL, headers={'Accept': 'application/json'})
