@@ -406,16 +406,18 @@ def bedSort(bed, tmpColName='chrom_mod'):
 
     Args
     - bed: pandas.DataFrame
-        BED table, must contain columns chrom, chromStart, and chromEnd.
-        Assumes UCSC chromosome format: chr1, chr2, ...
+        BED table, column order assumed to be chrom, chromStart, and chromEnd, ...
+        Actual names of columns do not matter.
+        First (chrom) column assumed to follow UCSC chromosome format: chr1, chr2, ...
     - tmpColName: str. default='chrom_mod'
-        Temporary column name to use for sorting.
+        Unique temporary column name to use for sorting.
 
     Returns: pandas.DataFrame
       Sorted BED table
-    
+
     TODO: Handle other chromosome naming formats.
     '''
+    assert(tmpColName not in bed.columns)
 
     def pad_fn(x):
         '''
@@ -426,8 +428,8 @@ def bedSort(bed, tmpColName='chrom_mod'):
         else:
             return x
 
-    bed['chrom_mod'] = bed['chrom'].map(pad_fn)
-    bed = bed.sort_values(by=['chrom_mod', 'chromStart', 'chromEnd']).drop('chrom_mod', axis=1)
+    bed[tmpColName] = bed.iloc[:,0].map(pad_fn)
+    bed = bed.sort_values(by=[tmpColName, bed.columns[1], bed.columns[2]]).drop(tmpColName, axis=1)
     return bed
 
 # endregion --- BED tools
