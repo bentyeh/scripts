@@ -41,7 +41,7 @@ def get_UniProt(uniprot_id, export, toDf=False):
     '''
     
     assert export in ('txt', 'fasta', 'xml', 'rdf', 'gff')
-    url = 'https://www.uniprot.org/uniprot/{}.{}'.format(uniprot_id, export)
+    url = f'https://www.uniprot.org/uniprot/{uniprot_id}.{export}'
     headers = {'accept': 'text/html'}
     r = requests.get(url=url, headers=headers)
     if not r.ok:

@@ -17,7 +17,7 @@ import utils_files, utils
 def rcindex(index, length):
     '''
     Get the position of `index` for a reverse-complemented sequence of length `length`.
-    
+
     Example: str(Bio.Seq.Seq(seq[index]).complement()) == seq.reverse_complement()[RCIndex(index, len(seq))]
     '''
     return length - index - 1
@@ -98,7 +98,7 @@ FASTA_HEADER_REGEX_SGD_PROTEIN = re.compile(
 def parseDefaultHeader(header, header_prefix='>', pattern=FASTA_HEADER_REGEX_DEFAULT):
     '''
     Parse FASTA header.
-    
+
     Args
     - header: str
         FASTA header line
@@ -106,12 +106,12 @@ def parseDefaultHeader(header, header_prefix='>', pattern=FASTA_HEADER_REGEX_DEF
         FASTA header line prefix
     - pattern: str or re.Pattern. default=FASTA_HEADER_REGEX_DEFAULT
         Regex pattern with grouped names
-    
+
     Returns: dict
     - Map of metadata of protein sequence.
     - Keys: depends on `pattern`
     '''
-    
+
     # process and validate `pattern` argument
     if isinstance(pattern, str):
         pattern = re.compile(pattern)
@@ -121,12 +121,12 @@ def parseDefaultHeader(header, header_prefix='>', pattern=FASTA_HEADER_REGEX_DEF
     header = header.strip()
     if header.startswith(header_prefix):
         header = header[len(header_prefix):]
-    
+
     # extract key, value pairs from regex match to dict
     try:
         m = pattern.match(header)
         data = m.groupdict()
-    
+
         # strip whitespace from dict values
         data = {key: value.strip() for key, value in data.items() if value not in ('', None)}
     except AttributeError:
@@ -142,7 +142,7 @@ def parseDefaultHeader(header, header_prefix='>', pattern=FASTA_HEADER_REGEX_DEF
 def parseEnsemblPepHeader(header, **kwargs):
     '''
     Parse Ensembl Peptide FASTA header. Wrapper for parseDefaultHeader().
-    
+
     Returns: dict
     - Map of metadata of protein sequence.
     - Keys: not all may be present, e.g., the GRCh37.63 release only contains up to 'transcript'
@@ -165,7 +165,7 @@ def parseEnsemblPepHeader(header, **kwargs):
       - description: gene description
       - source: 
       - accession: accession id of sequence from source
-    
+
     References
     - See the README file in the FTP directory (e.g.,
       http://ftp.ensembl.org/pub/release-63/fasta/homo_sapiens/pep/README) for a
@@ -173,13 +173,13 @@ def parseEnsemblPepHeader(header, **kwargs):
     - See https://uswest.ensembl.org/info/data/ftp/index.html for a description of
       the LOCATION (e.g., 'chromosome:NCBI35:1:904515:910768:1') attribute.
     '''
-    
+
     return parseDefaultHeader(header, pattern=FASTA_HEADER_REGEX_ENSEMBL_PEPTIDE, **kwargs)
 
 def parseSGDProteinHeader(header, **kwargs):
     '''
     Parse SGD Protein FASTA header. Wrapper for parseDefaultHeader().
-    
+
     Returns: dict
     - Map of metadata of protein sequence.
     - Keys: not all may be present
@@ -193,24 +193,24 @@ def parseSGDProteinHeader(header, **kwargs):
       - strand: strandedness (reverse complement, NA)
       - status: "Verified", "Uncharacterized", or "Dubious"
       - description: description
-    
+
     References
     - Yeast ORF naming conventions: https://sites.google.com/view/yeastgenome-help/sgd-general-help/glossary
     - Yeast ORF statuses: https://downloads.yeastgenome.org/sequence/S288C_reference/orf_protein/orf_protein.README
     '''
-    
+
     return parseDefaultHeader(header, pattern=FASTA_HEADER_REGEX_SGD_PROTEIN, **kwargs)
 
 def parseUniProtHeader(header, header_prefix='>'):
     '''
     Parse UniProt FASTA header. See https://www.uniprot.org/help/fasta-headers.
-    
+
     Args
     - header: str
         FASTA header line
     - header_prefix: str. default='>'
         FASTA header line prefix
-    
+
     Returns: dict
     - Map of metadata of protein sequence.
     - Keys:
@@ -224,12 +224,12 @@ def parseUniProtHeader(header, header_prefix='>'):
       - pe: [ProteinExistence] numerical value describing the evidence for the existence of the protein
       - sv: [SequenceVersion] version number of the sequence
     '''
-    
+
     # strip whitespace and prefix
     header = header.strip()
     if header.startswith(header_prefix):
         header = header[len(header_prefix):]
-    
+
     # extract gene name if present
     split = re.split(r'GN=(?P<gn>.*)(?=\sPE=)\s+', header)
     m_gn = ''
@@ -238,15 +238,15 @@ def parseUniProtHeader(header, header_prefix='>'):
     if len(split) > 1:
         m_gn = split[1]
         header = split[0] + split[2]
-    
+
     # extract key, value pairs from regex match to dict
     pattern = FASTA_HEADER_REGEX_UNIPROT
     m = pattern.match(header)
     data = m.groupdict()
-    
+
     # add gene name if present
     data['gn'] = m_gn
-    
+
     # remove leading/trailing whitespace from each value in dict
     data = {key: value.strip() for key, value in data.items()}
     return data
@@ -256,7 +256,7 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
     Parse UCSC Table Browser FASTA header.
 
     Example: hg38_knownGene_ENST00000376838.5_0 range=chr1:11130526-11131568 5'pad=10 3'pad=3 strand=- repeatMasking=none
-    
+
     Args
     - header: str
         FASTA header line
@@ -267,7 +267,7 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
         valid Python identifiers, e.g., pad5 and pad3.
     - toInt: bool. default=True
         Where possible, convert string values to int. May impact performance.
-    
+
     Returns: dict
     - Map of metadata of protein sequence.
     - Keys
@@ -286,12 +286,12 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
         of the FASTA header.
       - In the Table Browser, these options are specified after clicking 'get output'
     '''
-    
+
     # strip whitespace and prefix
     header = header.strip()
     if header.startswith(header_prefix):
         header = header[len(header_prefix):]
-    
+
     # extract key, value pairs from regex match to dict
     pattern = FASTA_HEADER_REGEX_UCSC
     m = pattern.match(header)
@@ -300,7 +300,7 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
     if retainKeys:
         data['5\'pad'] = data.pop('pad5')
         data['3\'pad'] = data.pop('pad3')
-    
+
     # remove leading/trailing whitespace from each value in dict
     if toInt:
         # convert str to int if applicable
@@ -384,14 +384,14 @@ def dfToFasta(df, file=None, name_col='name', seq_col='seq', header_prefix='>'):
     - header_prefix: str. default='>'
         FASTA header line prefix
     '''
-    
+
     if isinstance(file, str):
         f = utils_files.createFileObject(file, 'wt')
     elif isinstance(file, io.IOBase):
         f = file
     else:
         raise ValueError('`file` must be a string or file object')
-    
+
     for _, row in df.iterrows():
         print(header_prefix + row[name_col], row[seq_col], sep='\n', end='\n\n', file=f)
     f.close()
@@ -480,7 +480,7 @@ def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=T
     names, and aliases.
 
     Dependencies: Biopython
-    
+
     Args
     - term: iterable of str
         Gene name / alias
@@ -506,7 +506,7 @@ def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=T
         - https://www.ncbi.nlm.nih.gov/books/NBK49540/
             Fields (and abbreviated fields) available for sequence databases (Nucleotide, Protein, EST, GSS), but most
             of them apply to the NCBI Gene database as well.
-    
+
     Returns: dict: int -> dict: str -> str or list of str
       {<NCBI Gene ID>: {'symbol': <gene symbol>, 'name': <gene name>, 'aliases': [aliases]}}
     '''
@@ -539,7 +539,7 @@ def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=T
     query += verbatim
     if verbose:
         print(query)
-    
+
     # initialize return variable
     matches = {}
 
@@ -570,7 +570,7 @@ def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=T
 def multisearch_NCBIGene(terms, nProc=None, **kwargs):
     '''
     Search official human gene names and aliases in NCBI Gene database for terms.
-    
+
     Args
     - terms: iterable of str
         Terms to lookup
@@ -578,7 +578,7 @@ def multisearch_NCBIGene(terms, nProc=None, **kwargs):
         email registered with NCBI
     - nProc: int. default=None
         Number of processes to use. If None, uses as many processes as available CPUs.
-    
+
     Returns: dict: str -> dict: int -> dict: str -> str or list of str
       {<term>: <NCBI Gene ID>: {'symbol': <gene symbol>, 'name': <gene name>, 'aliases': [aliases]}}
     '''
@@ -605,7 +605,7 @@ UNIPROT_ACCESSION_REGEX = re.compile(r'[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](
 def convertUniProt(source, to, query, toDf=True):
     '''
     Convert database identifiers using UniProt's Retrieve/ID mapping service.
-    
+
     Args
     - source: str
         Query identifier type.
@@ -615,14 +615,14 @@ def convertUniProt(source, to, query, toDf=True):
         Identifiers separated by spaces or new lines.
     - toDf: bool. default=True
         Return results as pandas DataFrame.
-    
+
     Returns: str or pandas.DataFrame
       UniProt's mapping service returns a tab-delimited table with column headers "From" and "To".
       If `toDf` is True, the raw text is returned. Otherwise, it is parsed into a DataFrame.
-    
+
     Reference: https://www.uniprot.org/help/api_idmapping
     '''
-    
+
     url = 'https://www.uniprot.org/uploadlists/'
     params = {
         'from': source,
@@ -630,11 +630,11 @@ def convertUniProt(source, to, query, toDf=True):
         'format': 'tab',
         'query': query
     }
-    
+
     r = requests.post(url=url, data=params)
     if not r.ok:
         r.raise_for_status()
-    
+
     if toDf:
         return pd.read_csv(io.StringIO(r.text), sep='\t', header=0, index_col=False)
     return r.text
@@ -656,11 +656,11 @@ def convertUniProt(source, to, query, toDf=True):
 def blastToDf(records):
     '''
     Convert BLAST records to DataFrame.
-    
+
     Args
     - records: list of Bio.Blast.Record
         BLAST records (each record corresponds to 1 query)
-    
+
     Returns: pandas.DataFrame or None (no HSPs in records)
     - Rows: HSPs
     - Columns
@@ -703,11 +703,11 @@ def blastToDf(records):
       - sbjct_start: int
       - score: float
       - strand: 2-tuple of ??
-    
+
     Reference
     - See https://www.ncbi.nlm.nih.gov/dtd/NCBI_BlastOutput.mod.dtd for XML DTD schema
     '''
-    
+
     hsps = [] # high-scoring pairs
     for record in records:
         for alignment in record.alignments:
