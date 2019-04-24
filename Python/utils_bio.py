@@ -432,6 +432,42 @@ def bedSort(bed, tmpColName='chrom_mod'):
     bed = bed.sort_values(by=[tmpColName, bed.columns[1], bed.columns[2]]).drop(tmpColName, axis=1)
     return bed
 
+def bedOverlapIndices(bed):
+    '''
+    Find overlapping intervals in a BED file.
+
+    Args
+    - bed: pandas.DataFrame
+        BED format, must contain first 3 columns
+
+    Returns: list of 2-tuples
+      Each tuple represents a pair of overlapping intervals.
+      The tuple elements are the DataFrame indices of the intervals.
+
+    Algorithm based on https://www.geeksforgeeks.org/check-if-any-two-intervals-overlap-among-a-given-set-of-intervals/.
+    '''
+
+    # make sure all start positions are less than end positions; flip if necessary
+    for i in range(bed.shape[0]):
+        start = bed.iloc[i,1]
+        if start > bed.iloc[i,2]:
+            bed.iloc[i,1] = bed.iloc[i,2]
+            bed.iloc[i,2] = start
+
+    overlaps = []
+
+    # sort intervals by start
+    bed = bed.sort_values(by=[bed.columns[1], bed.columns[2]])
+
+    # if start of an interval < end of previous interval, then there is an overlap
+    for i in range(1, bed.shape[0]):
+        j = 1
+        while bed.iloc[i,1] < bed.iloc[i-j,2] and i >= j:
+            overlaps.append(tuple(sorted([bed.index[i-j], bed.index[i]])))
+            j += 1
+
+    return overlaps
+
 # endregion --- BED tools
 
 # region --- Database identifier conversion tools
