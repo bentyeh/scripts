@@ -313,10 +313,10 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
         data = {key: value.strip() for key, value in data.items()}
     return data
 
-def fastaToDF(file, save='', header_prefix='>', headerParser=parseDefaultHeader, **kwargs):
+def fastaToDF(file, save='', header_prefix='>', headerParser=parseDefaultHeader, keepRawHeader=None, **kwargs):
     '''
     Parse FASTA file into pandas DataFrame.
-    
+
     Args
     - file: str or io.IOBase
         Path to FASTA file, or file object. Gzip-compressed files with extension '.gz'
@@ -325,21 +325,23 @@ def fastaToDF(file, save='', header_prefix='>', headerParser=parseDefaultHeader,
         FASTA header line prefix
     - headerParser: function. default = parseUniProtHeader
         Function to parse header line into dict
+    - keepRawHeader: str. default=None
+        Column name in which to store original raw header including the header prefix.
     - **kwargs
         Additional keyword arguments to pass to headerParser().
-    
+
     Returns: pandas.DataFrame
       Rows: protein / DNA entries
       Columns: data about entries. Always includes 'seq' (sequence) column.
     '''
-    
+
     if isinstance(file, str):
         f = utils_files.createFileObject(file)
     elif isinstance(file, io.IOBase):
         f = file
     else:
         raise ValueError('`file` must be a string or file object')
-    
+
     entries = []
     entry = {'seq': ''}
     while True:
@@ -354,14 +356,16 @@ def fastaToDF(file, save='', header_prefix='>', headerParser=parseDefaultHeader,
             if entry['seq'] is not '':
                 # add sequence to entry
                 entries.append(entry)
-            
+
             # parse new entry
             entry = headerParser(line, header_prefix=header_prefix, **kwargs)
             entry['seq'] = ''
+            if isinstance(keepRawHeader, str):
+                entry[keepRawHeader] = line.strip()
         else:
             entry['seq'] += line.strip()
     f.close()
-    
+
     # construct pandas DataFrame from list of dicts
     df = pd.DataFrame(entries)
     return df
