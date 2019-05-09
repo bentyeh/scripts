@@ -412,9 +412,10 @@ def bedSort(bed, tmpColName='chrom_mod', inplace=False):
     - tmpColName: str. default='chrom_mod'
         Unique temporary column name to use for sorting.
     - inplace: bool. default=False
-        Perform sorting inplace (edits input DataFrame). Otherwise, makes a copy of the input DataFrame.
+        True: Perform sorting inplace (edits input DataFrame, which is passed by reference) and return None.
+        False: Make a deep copy of the input DataFrame before sorting. Returns sorted DataFrame.
 
-    Returns: pandas.DataFrame
+    Returns: pandas.DataFrame or None
       Sorted BED table
 
     TODO: Handle other chromosome naming formats.
@@ -430,11 +431,15 @@ def bedSort(bed, tmpColName='chrom_mod', inplace=False):
         else:
             return x
 
-    if not inplace:
+    if inplace:
+        bed[tmpColName] = bed.iloc[:,0].map(pad_fn)
+        bed.sort_values(by=[tmpColName, bed.columns[1], bed.columns[2]], inplace=True)
+        bed.drop(tmpColName, axis=1, inplace=True)
+        return None
+    else:
         bed = bed.copy()
-    bed[tmpColName] = bed.iloc[:,0].map(pad_fn)
-    bed = bed.sort_values(by=[tmpColName, bed.columns[1], bed.columns[2]], inplace=True)
-    bed = bed.drop(tmpColName, axis=1, inplace=True)
+        bed[tmpColName] = bed.iloc[:,0].map(pad_fn)
+        bed = bed.sort_values(by=[tmpColName, bed.columns[1], bed.columns[2]]).drop(tmpColName, axis=1)
     return bed
 
 def bedOverlapIndices(bed):
