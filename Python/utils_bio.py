@@ -400,7 +400,7 @@ def dfToFasta(df, file=None, name_col='name', seq_col='seq', header_prefix='>'):
 
 # region --- BED tools
 
-def bedSort(bed, tmpColName='chrom_mod'):
+def bedSort(bed, tmpColName='chrom_mod', inplace=False):
     '''
     Sort a BED file by chrom, chromStart, chromEnd numerically then lexicographically
 
@@ -411,6 +411,8 @@ def bedSort(bed, tmpColName='chrom_mod'):
         First (chrom) column assumed to follow UCSC chromosome format: chr1, chr2, ...
     - tmpColName: str. default='chrom_mod'
         Unique temporary column name to use for sorting.
+    - inplace: bool. default=False
+        Perform sorting inplace (edits input DataFrame). Otherwise, makes a copy of the input DataFrame.
 
     Returns: pandas.DataFrame
       Sorted BED table
@@ -428,8 +430,11 @@ def bedSort(bed, tmpColName='chrom_mod'):
         else:
             return x
 
+    if not inplace:
+        bed = bed.copy()
     bed[tmpColName] = bed.iloc[:,0].map(pad_fn)
-    bed = bed.sort_values(by=[tmpColName, bed.columns[1], bed.columns[2]]).drop(tmpColName, axis=1)
+    bed = bed.sort_values(by=[tmpColName, bed.columns[1], bed.columns[2]], inplace=True)
+    bed = bed.drop(tmpColName, axis=1, inplace=True)
     return bed
 
 def bedOverlapIndices(bed):
