@@ -90,13 +90,13 @@ def intervals_weightedOverlap(intervals):
             curOverlap.remove(e_argsort[e_idx])
             e_idx += 1
         start = end
-    
+
     # post-processing: remove length-0 intervals where start == end
     validIntervals = [i for i in range(len(newIntervals)) if newIntervals[i][0] < newIntervals[i][1]]
     weights = [weights[i] for i in validIntervals]
     newIntervals = [newIntervals[i] for i in validIntervals]
     overlapIntervals = [overlapIntervals[i] for i in validIntervals]
-    
+
     return (newIntervals, weights, overlapIntervals)
 
 def intervals_value(intervals, pos, check_intervals=True):
@@ -110,11 +110,11 @@ def intervals_value(intervals, pos, check_intervals=True):
         positions at which to look-up value
     - check_intervals: bool. default=True
         Perform basic checks that intervals are non-overlapping and start < end
-    
+
     Returns: list of float/int or None
       Values at specified positions. If a position is not in the range of intervals,
       its corresponding value is None.
-    
+
     Note: If intervals are overlapping, run intervals_weightedOverlap(intervals) first.
     '''
     # wrangle input arguments to desired form
@@ -126,7 +126,7 @@ def intervals_value(intervals, pos, check_intervals=True):
     start = df.iloc[:, 0].values
     end = df.iloc[:, 1].values
     value = df.iloc[:, 2].values
-    
+
     pos = np.asarray(pos).reshape(-1,1) # reshape to column vector
 
     # verify that intervals are non-overlapping
