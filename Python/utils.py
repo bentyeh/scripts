@@ -1,4 +1,4 @@
-import itertools
+import itertools, signal
 import numpy as np
 import pandas as pd
 
@@ -28,6 +28,29 @@ def isfloat(s):
     except ValueError:
         return False
     return True
+
+def wrap_signal_handler(fun, sig, handler=signal.SIG_DFL):
+    '''
+    Wrap a function with a signal handler.
+
+    Args
+    - fun: function
+        Function to to wrap
+    - sig: signal
+        Signal to handle with handler
+    - handler: function or signal.SIG_IGN or signal.SIG_DFL. default=signal.SIG_DFL
+        Signal handler
+
+    Returns: function
+
+    Examples
+    - Wrap a function such that it ignores SIGINT:
+        wrap_signal_handler(fun, signal.SIGINT, handler=signal.SIG_IGN)
+    '''
+    def newfun(*args, **kwargs):
+        signal.signal(sig, handler)
+        return fun(*args, **kwargs)
+    return newfun
 
 def intervals_weightedOverlap(intervals):
     '''
