@@ -494,13 +494,45 @@ def get_QuickGO_secondaryIds(goIds):
 
 # region ------ NCBI
 
-def blastAndParse(program, database, sequence, format_type='XML', blast_fun=Bio.Blast.NCBIWWW.qblast,
-                  log=sys.stdout, parse=None, save=None, compress=True, **kwargs):
+NCBI_BLAST_URL = 'https://blast.ncbi.nlm.nih.gov/Blast.cgi'
+
+def blast_delete(rids, url_base=NCBI_BLAST_URL, verbose=True, **kwargs):
     '''
-    BLAST sequences and save results to file.
+    Delete BLAST searches by Request ID (RID).
 
     Args
-    - program: str.
+    - rids: list of str
+        Request IDs
+    - url_base: str. default=NCBI_BLAST_URL
+        BLAST server URL
+    - verbose: bool. default=True
+        Print out RID that is being deleted
+    - **kwargs: arguments to pass to requests.delete()
+
+    Returns: None
+
+    Notes
+    - This function currently does not seem to have any effect. Results are still
+      retrievable from the NCBI server via blast_get() or going to
+      https://blast.ncbi.nlm.nih.gov/Blast.cgi?RID=<rid>&CMD=Get
+    - Not sure if using `params` or `data` argument in requests.delete() call is correct.
+    '''
+    for rid in rids:
+        if verbose:
+            print(f'Stopping {rid}')
+        requests.delete(url=url_base, params={'CMD': 'DELETE', 'RID': rid}, **kwargs)
+    return None
+
+def blast_submit(program, database, query=None, sequence=None, url_base=NCBI_BLAST_URL,
+                 composition_based_statistics=None, entrez_query='(none)', matrix_name=None,
+                 matrix=None, expect=None, filter=None, gapcosts=None, hitlist_size=None,
+                 nucl_penalty=None, nucl_reward=None, threshold=None, word_size=None,
+                 lock=None, server_delay=10):
+    '''
+    Submit BLAST query and return Request ID (RID).
+
+    BLAST Common URL API Args: https://ncbi.github.io/blast-cloud/dev/api.html
+    - program: str
         blastn, megablast, blastp, blastx, tblastn, or tblastx
     - database: str
         For DNA
@@ -512,82 +544,180 @@ def blastAndParse(program, database, sequence, format_type='XML', blast_fun=Bio.
           refseq_protein: NCBI Protein Reference Sequences
           swissprot: Non-redundant UniProtKB/SwissProt sequences
           pdbaa: PDB protein database
-    - sequence: str.
+    - query: str. default=None
         FASTA, bare sequence, or newline-delimited identifiers
-    - format_type: str. default='XML'
-        HTML, Text, XML, XML2, JSON2, or Tabular. default=XML
-    - blast_fun: function. default=Bio.Blast.NCBIWWW.qblast
-        BLAST function. Should accept similar arguments as Bio.Blast.NCBIWWW.qblast and return a file object
-        (e.g., io.StringIO).
-    - log: str. default=sys.stdout
-        Path to save log file.
-    - save: str. default=None
-        Path to save raw BLAST results
-    - parse: str. default=None
-        Directory in which to save parsed BLAST results (e.g., results from individual queries).
-        Filenames are constructed from query IDs.
-    - compress: bool. default=True
-        Gzip-compress parsed files.
-        Does not affect compression of `save` file, which is determined automatically from the supplied filename.
-    - **kwargs: additional arguments to pass to blast_fun()
+        Aliased by `sequence` (used by Biopython's qblast()). `query` takes precedence if both arguments are given.
+    - composition_based_statistics: int. default=None
+        Matrix adjustment method to compensate for amino acid composition of sequences.
+        0 (No adjustment), 1 (Composition-based statistics), 2 (Conditional compositional
+        score matrix adjustment), 3 (Universal compositional score matrix adjustment)
+    - entrez_query: str. default='(none)'
+        Note: This is unofficially supported by the NCBI BLAST server.
+    - matrix: str. default=None
+        If None, the server currently defaults to 'BLOSUM62'.
+        Aliased by `matrix_name` (used by Biopython's qblast()). `matrix` takes precedence if both arguments are give.
+    - expect: float. default=None.
+        Expect value.
+    - filter: str. default=None.
+        Low complexity filtering. 'F' to disable. 'T' or 'L' to enable. Prepend 'm' for mask at lookup (e.g., 'mL')
+    - gapcosts: str. default=None
+        Gap existence and extension costs. Pair of positive integers separated by a space such as '11 1'.
+    - hitlist_size: int. default=None
+        Number of databases sequences to keep
+    - nucl_penalty: int. default=None
+        Cost for mismatched bases (BLASTN and megaBLAST)
+    - nucl_reward: int. default=None
+        Reward for matching bases (BLASTN and megaBLAST)
+    - threshold: int. default=None
+        Neighboring score for initial words. Positive integer (BLASTP default is 11). Does not apply to BLASTN or MegaBLAST).
+    - word_size: int. default=None
+        Size of word for initial matches
 
-    Returns: io.StringIO or None
-      Returns result of blast_fun if successful, otherwise None.
+    Args
+    - url_base: str. default=NCBI_BLAST_URL
+        BLAST server URL
+    - lock: multiprocessing.Lock. default=None
+        Once acquired, grants exclusive contact with server. Any server delays are applied before
+        releasing the lock.
+    - server_delay: int. default=10
+        Minimum number of seconds between any contact with the server
 
-    Notes
-    - program, database, sequence, and format_type are arguments directly passed to blast_fun()
-    - Any (sub)directories required for the paths provided in save and parse will be automatically created.
-    - Parsing of 'HTML', 'Text', 'XML2', and 'JSON2' format_type is not supported
+    Returns: str or requests.Response
+      Request ID (RID). Returns the request response if unable to find RID in response (e.g., unsuccessful submission).
     '''
+    assert (query is not None) or (sequence is not None)
+    if query is None:
+        query = sequence
+    if matrix is None:
+        matrix = matrix_name
+    if lock is None:
+        lock = multiprocessing.Lock()
 
-    # Formats supported by BioPython's SearchIO module
-    # Note that BLAST Text format_type is supported via 'blast-text', but writing is not
-    parse_types = {'XML': 'blast-xml', 'Tabular': 'blast-tab'}
-    extension = {'XML': '.xml', 'Text': '.txt', 'XML2': '.xml', 'JSON2': '.json', 'Tabular': '.tsv'}
-    if compress:
-        extension = {k: v + '.gz' for k, v in extension.items()}
+    data = {
+        'CMD': 'PUT',
+        'QUERY': query,
+        'DATABASE': database,
+        'PROGRAM': program,
+        'FILTER': filter,
+        'EXPECT': expect,
+        'NUCL_REWARD': nucl_reward,
+        'NUCL_PENALTY': nucl_penalty,
+        'GAPCOSTS': gapcosts,
+        'MATRIX': matrix,
+        'HITLIST_SIZE': hitlist_size,
+        'THRESHOLD': threshold,
+        'WORD_SIZE': word_size,
+        'COMPOSITION_BASED_STATISTICS': composition_based_statistics,
+        'ENTREZ_QUERY': entrez_query
+    }
+    data = {k: v for k, v in data.items() if v is not None}
+
+    lock.acquire()
+    r = requests.put(url=url_base, data=data)
+    time.sleep(server_delay)
+    lock.release()
+    if not r.ok:
+        return r
 
     try:
-        result = blast_fun(program, database, sequence, format_type=format_type, **kwargs)
-    except Exception as err:
-        print(err, file=log)
-        return None
+        rid, _ = Bio.Blast.NCBIWWW._parse_qblast_ref_page(io.StringIO(r.text))
+        return rid
+    except ValueError as err:
+        print(err, file=sys.stderr)
+        return r
 
-    if save is not None:
-        os.makedirs(os.path.dirname(save), exist_ok=True)
-        f = utils_files.createFileObject(save, 'wt')
-        f.write(result.read())
-        f.close()
-        result.seek(0)
+def blast_get(rid, url_base=NCBI_BLAST_URL, no_wait=True,
+              alignments=None, descriptions=None, format_object=None, format_type=None, ncbi_gi=None, hitlist_size=None,
+              lock=None, initial_delay=0, server_delay=10, response_delay=60):
+    '''
+    Retrieve BLAST result by Request ID (RID).
 
-    if parse is not None:
-        if format_type in parse_types:
-            os.makedirs(os.path.dirname(parse), exist_ok=True)
-            for qresult in Bio.SearchIO.parse(result, format=parse_types[format_type]):
-                filename = utils_files.createValidPath(qresult.id) + extension[format_type]
-                with utils_files.createFileObject(os.path.join(parse, filename), 'wt') as f:
-                    Bio.SearchIO.write(qresult, f, parse_types[format_type])
-        else:
-            print(f'Parsing of format_type {format_type} is not supported.', file=log)
+    BLAST Common URL API Args: https://ncbi.github.io/blast-cloud/dev/api.html
+    - alignments: int. default=None
+        Number of alignments to print (applies to HTML and Text format_type)
+    - descriptions: int. default=None
+        Number of descriptions to print (applies to HTML and Text format_type)
+    - format_object: str. default=None
+        'SearchInfo': status check
+        'Alignment': report formatting
+    - format_type: str. default=None
+        HTML (default if None), Text, XML, XML2, JSON2, or Tabular
+    - ncbi_gi: str. default=None
+        'T' or 'F'. Show NCBI GIs in report.
+    - hitlist_size: int. default=None
+        Number of databases sequences to keep
 
-    return result
+    Args
+    - rid: str
+        BLAST Request ID
+    - url_base: str. default=NCBI_BLAST_URL
+        BLAST server URL
+    - no_wait: bool. default=True
+        Return request result immediately.
+    - lock: multiprocessing.Lock. default=None
+        Once acquired, grants exclusive contact with server. Any server delays are applied before
+        releasing the lock.
+    - initial_delay: int. default=0
+        Minimum number of seconds before initial polling request of the current RID
+    - server_delay: int. default=10
+        Minimum number of seconds between any contact with the server
+    - response_delay: int. default=60
+        Minimum number of seconds between polling for result of the current RID
 
-def stop_blast(rids, url=Bio.Blast.NCBIWWW.NCBI_BLAST_URL):
-    for rid in rids:
-        requests.delete(url=url, params={'CMD': 'DELETE', 'RID': rid})
-        requests.delete(url=url, data={'CMD': 'DELETE', 'RID': rid})
-        requests.get(url=url, params={'CMD': 'DELETE', 'RID': rid})
-        requests.get(url=url, data={'CMD': 'DELETE', 'RID': rid})
-        requests.put(url=url, params={'CMD': 'DELETE', 'RID': rid})
-        requests.put(url=url, data={'CMD': 'DELETE', 'RID': rid})
+    Returns: io.StringIO
+      io.StringIO of the request response
+    '''
+    if lock is None:
+        lock = multiprocessing.Lock()
 
-def my_qblast(program, database, sequence, url_base=Bio.Blast.NCBIWWW.NCBI_BLAST_URL,
-              composition_based_statistics=None, entrez_query='(none)', matrix_name=None,
-              expect=None, filter=None, gapcosts=None, genetic_code=None,
-              hitlist_size=None, nucl_penalty=None, nucl_reward=None,
-              threshold=None, word_size=None, alignments=None, descriptions=None,
-              format_object=None, format_type=None, ncbi_gi=None,
-              lock=None, queue=None, semaphore=None, initial_delay=10, server_delay=10, response_delay=60):
+    params = {
+        'CMD': 'GET',
+        'ALIGNMENTS': alignments,
+        'DESCRIPTIONS': descriptions,
+        'HITLIST_SIZE': hitlist_size,
+        'FORMAT_OBJECT': format_object,
+        'FORMAT_TYPE': format_type,
+        'NCBI_GI': ncbi_gi,
+        'RID': rid
+    }
+    params = {k: v for k, v in params.items() if v is not None}
+
+    time.sleep(initial_delay)
+    while True:
+        # respect server_delay
+        lock.acquire()
+        r = requests.get(url=url_base, params=params)
+        previous = time.time()
+        time.sleep(server_delay)
+        lock.release()
+
+        results = r.text
+
+        # Can see an "\n\n" page while results are in progress
+        if results == "\n\n":
+            continue
+
+        # XML results don't have the Status tag when finished
+        if "Status=" not in results:
+            break
+
+        status = re.search(r'Status=(\S+)', results).group(1)
+        if status.upper() in ['READY', 'FAILED', 'UNKNOWN', None] or no_wait:
+            if status.upper() == 'UNKNOWN':
+                print(f'Search {rid} expired', file=sys.stderr)
+            if status.upper() == 'FAILED':
+                print(f'Search {rid} failed', file=sys.stderr)
+            break
+
+        # respect response_delay
+        current = time.time()
+        wait = max(previous + response_delay - current, 0)
+        time.sleep(wait)
+        previous = current + wait
+
+    return io.StringIO(results)
+
+def my_qblast(program, database, query=None, sequence=None, semaphore=None, queue=None, **kwargs):
     '''
     Submit queries to NCBI BLAST server using the Common URL API. Supports multiprocessing
     synchronization while respecting server limits.
@@ -603,111 +733,125 @@ def my_qblast(program, database, sequence, url_base=Bio.Blast.NCBIWWW.NCBI_BLAST
         template_type, template_length
     - Reset arguments to default values
         expect=None, hitlist_size=None, alignments=None, descriptions=None, format_type=None
-    - Remap matrix_name to MATRIX
     - New arguments
+      - Aliases to match argument names of the BLAST Common URL API
+        - matrix: higher precedence alias of matrix_name
+        - query: higher precedence alias of sequence
       - Multiprocessing synchronization
         - lock: multiprocessing.Lock. default=None
-            Once acquired, grants exclusive contact with server.
+            Once acquired, grants exclusive contact with server. Any server delays are applied before
+            releasing the lock.
         - queue: multiprocessing.Queue. default=None
             Queue into which to pass (sequence, RID) tuple to communicate with parent process.
         - semaphore: multiprocessing.Semaphore. default=None
             Semaphore to limit number of parallel requests to the server.
-      - Server limits based on https://blast.ncbi.nlm.nih.gov/Blast.cgi?CMD=Web&PAGE_TYPE=BlastDocs&DOC_TYPE=DeveloperInfo
-        - server_delay: int. default=10
+      - Server limits
+        - initial_delay: int. default=None
+            Minimum number of seconds before initial polling request of the current RID
+        - server_delay: int. default=None
             Minimum number of seconds between any contact with the server
-        - response_delay: int. default=60
+        - response_delay: int. default=None
             Minimum number of seconds between polling for result of the current RID
 
     Returns: io.StringIO, or requests.Response
       If BLAST is successful, returns io.StringIO of response text.
       If initial BLAST query submission is unsuccessful, returns the Response object.
     '''
-    if lock is None:
-        lock = multiprocessing.Lock()
+    assert (query is not None) or (sequence is not None)
+    kwargs.update({'program': program, 'database': database, 'query': query, 'sequence': sequence})
     if semaphore is None:
         semaphore = multiprocessing.Semaphore()
 
-    data = {
-        'CMD': 'PUT',
-        'QUERY': sequence,
-        'DATABASE': database,
-        'PROGRAM': program,
-        'FILTER': filter,
-        'EXPECT': expect,
-        'NUCL_REWARD': nucl_reward,
-        'NUCL_PENALTY': nucl_penalty,
-        'GAPCOSTS': gapcosts,
-        'MATRIX': matrix_name,
-        'HITLIST_SIZE': hitlist_size,
-        'THRESHOLD': threshold,
-        'WORD_SIZE': word_size,
-        'COMPOSITION_BASED_STATISTICS': composition_based_statistics,
-        'ENTREZ_QUERY': entrez_query
-    }
-    data = {k: v for k, v in data.items() if v is not None}
+    submit_args = ['program', 'database', 'query', 'sequence', 'url_base',
+                   'composition_based_statistics', 'entrez_query', 'matrix_name', 'matrix',
+                   'expect', 'filter', 'gapcosts', 'hitlist_size', 'nucl_penalty', 'nucl_reward',
+                   'threshold', 'word_size', 'lock', 'server_delay']
+    get_args = ['rid', 'url_base', 'no_wait', 'alignments', 'descriptions', 'format_object',
+                'format_type', 'ncbi_gi', 'hitlist_size', 'lock', 'initial_delay',
+                'server_delay', 'response_delay']
 
     semaphore.acquire()
-    lock.acquire()
-    time.sleep(server_delay)
-    r = requests.put(url=url_base, data=data)
-    lock.release()
-    if not r.ok:
-        print('BLAST query submission error.', file=sys.stderr)
+    rid = blast_submit(**{arg: kwargs[arg] for arg in submit_args if arg in kwargs})
+    if not isinstance(rid, str):
         semaphore.release()
-        return r
+        return rid
 
-    rid, _ = Bio.Blast.NCBIWWW._parse_qblast_ref_page(io.StringIO(r.text))
     if queue is not None:
         queue.put((sequence, rid))
 
-    params = {
-        'CMD': 'GET',
-        'ALIGNMENTS': alignments,
-        'DESCRIPTIONS': descriptions,
-        'FORMAT_OBJECT': format_object,
-        'FORMAT_TYPE': format_type,
-        'NCBI_GI': ncbi_gi,
-        'RID': rid
-    }
-    params = {k: v for k, v in params.items() if v is not None}
-
-    previous = time.time()
-
-    while True:
-        # respect response_delay
-        current = time.time()
-        wait = previous + response_delay - current - server_delay
-        if wait > 0:
-            time.sleep(wait)
-            previous = current + wait
-        else:
-            previous = current
-
-        # respect server_delay
-        lock.acquire()
-        time.sleep(server_delay)
-        r = requests.get(url=url_base, params=params)
-        lock.release()
-
-        results = r.text
-
-        # Can see an "\n\n" page while results are in progress,
-        if results == "\n\n":
-            continue
-
-        # XML results don't have the Status tag when finished
-        if "Status=" not in results:
-            break
-
-        status = re.search(r'Status=(\S+)', results).group(1)
-        if status.upper() in ['READY', 'FAILED', 'UNKNOWN', None]:
-            if status.upper() == 'UNKNOWN':
-                print(f'Search {rid} expired', file=sys.stderr)
-            if status.upper() == 'FAILED':
-                print(f'', file=sys.stdout)
-            break
+    kwargs['rid'] = rid
+    result = blast_get(**{arg: kwargs[arg] for arg in get_args if arg in kwargs})
     semaphore.release()
-    return io.StringIO(results)
+    return result
+
+def blastAndParse(blast_fun=my_qblast, save=None, parse=None, parse_type=None, parse_name=None, log=sys.stdout, **kwargs):
+    '''
+    BLAST sequences and save results to file.
+
+    Args
+    - blast_fun: function. default=my_qblast
+        BLAST function. Should accept kwargs and return a file object (e.g., io.StringIO).
+    - save: str. default=None
+        Path to save raw BLAST results.
+    - parse: str. default=None
+        Directory in which to save parsed BLAST results (e.g., results from individual queries).
+        Filenames are constructed from query IDs.
+        If None, results are not parsed.
+    - parse_type: str. default=None
+        Format of results returned by blast_fun. Supported values: 'XML', 'Tabular'.
+        If None, looks for `format_type` in kwargs.
+    - parse_name: function. default=None
+        Function that accepts an individual parsed result (Bio.SearchIO._model.query.QueryResult object,
+        e.g., an element returned by Bio.SearchIO.parse()) and outputs a filename (str). If None, constructs
+        a filename using the query result ID, parse_type, and applies gzip compression.
+    - log: str. default=sys.stdout
+        Path to save log file.
+    - **kwargs: additional arguments to pass to blast_fun()
+
+    Returns: return value of blast_fun, or None if blast_fun raises an exception.
+
+    Notes
+    - Any (sub)directories required for the paths provided in save and parse will be automatically created.
+    - Gzip-compression is automatically applied if a `save` or `parse_name` path ends with '.gz'
+    '''
+
+    # Formats supported by BioPython's SearchIO module
+    # Note that SearchIO supports reading BLAST Text format via 'blast-text', but writing is not supported
+    parse_types = {'XML': 'blast-xml', 'Tabular': 'blast-tab'}
+    extension = {'XML': '.xml.gz', 'Tabular': '.tsv.gz'}
+
+    try:
+        result = blast_fun(**kwargs)
+    except Exception as err:
+        print(err, file=log)
+        return None
+
+    if save is not None:
+        os.makedirs(os.path.dirname(save), exist_ok=True)
+        with utils_files.createFileObject(save, 'wt') as f:
+            f.write(result.read())
+        result.seek(0)
+
+    if parse is not None:
+        if parse_type is None:
+            if 'format_type' in kwargs:
+                parse_type = kwargs['format_type']
+        else:
+            print('No parse type provided.', file=log)
+            return result
+
+        if parse_type in parse_types:
+            os.makedirs(os.path.dirname(parse), exist_ok=True)
+            for qresult in Bio.SearchIO.parse(result, format=parse_types[parse_type]):
+                if parse_name is None:
+                    filename = utils_files.createValidPath(qresult.id) + extension[parse_type]
+                else:
+                    filename = parse_name(qresult)
+                with utils_files.createFileObject(os.path.join(parse, filename), 'wt') as f:
+                    Bio.SearchIO.write(qresult, f, parse_types[format_type])
+        else:
+            print(f'Parsing of format_type {parse_type} is not supported.', file=log)
+    return result
 
 def blastp_post(**kwargs):
     '''
@@ -864,6 +1008,5 @@ def blastp_post(**kwargs):
 
     r = requests.post(url=Bio.Blast.NCBIWWW.NCBI_BLAST_URL, files=data, allow_redirects=False)
     return r
-
 
 # endregion --- NCBI
