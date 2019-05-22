@@ -2,17 +2,13 @@
 import sys, os
 sys.path.append(os.path.dirname(__file__))
 
-import io, re, warnings
-from collections.abc import Iterable
-from multiprocessing import Pool
+import io, re
 
 import pandas as pd
-import Bio.Entrez
-import requests
 
 import utils_files, utils
 
-# region --- General bioinformatics tools
+# region ------ General bioinformatics tools
 
 def rcindex(index, length):
     '''
@@ -24,7 +20,7 @@ def rcindex(index, length):
 
 # endregion --- General bioinformatics tools
 
-# region --- File type columns
+# region ------ File type columns
 
 BED_COLNAMES = ['chrom', 'chromStart', 'chromEnd', 'name', 'score', 'strand', 'thickStart', 'thickEnd',
                 'itemRgb', 'blockCount', 'blockSizes', 'blockStarts']
@@ -33,7 +29,7 @@ GFF3_COLNAMES = ['seqid', 'source', 'type', 'start', 'end', 'score', 'strand', '
 
 # endregion --- File type columns
 
-# region --- FASTA tools
+# region ------ FASTA tools
 
 ## FASTA Header Parsers ##
 
@@ -313,7 +309,7 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
         data = {key: value.strip() for key, value in data.items()}
     return data
 
-def fastaToDF(file, save='', header_prefix='>', headerParser=parseDefaultHeader, keepRawHeader=None, **kwargs):
+def fastaToDf(file, save='', header_prefix='>', headerParser=parseDefaultHeader, keepRawHeader=None, **kwargs):
     '''
     Parse FASTA file into pandas DataFrame.
 
@@ -398,7 +394,7 @@ def dfToFasta(df, file=None, name_col='name', seq_col='seq', header_prefix='>'):
 
 # endregion --- FASTA tools
 
-# region --- BED tools
+# region ------ BED tools
 
 def bedSort(bed, tmpColName='chrom_mod', inplace=False):
     '''
@@ -480,178 +476,7 @@ def bedOverlapIndices(bed):
 
 # endregion --- BED tools
 
-# region --- Database identifier conversion tools
-
-## NCBI
-
-def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=True, verbose=True, **kwargs):
-    '''
-    Search official human gene names and aliases in NCBI Gene database for a match to term, returning official IDs,
-    names, and aliases.
-
-    Dependencies: Biopython
-
-    Args
-    - term: iterable of str
-        Gene name / alias
-    - email: str. default=None
-        Email registered with NCBI. If not None, sets Bio.Entrez.email. If Bio.Entrez.email is None, defaults to
-        'A.N.Other@example.com'.
-    - useDefaults: bool. default=True
-        Apply the following fields to the query:
-        - orgn: 'Homo sapiens'
-        - prop: 'alive'
-    - useSingleIndirectMatch: bool. default=True
-        If the Entrez Gene Database query returns only 1 NCBI Gene ID, use the match even if the
-        term does not exactly match the gene symbol or an alias.
-    - verbose: bool. default=True
-        Print submitted query.
-    - kwargs
-        Additional fields to add to the query. If multiple values are given, an OR relationship is assumed.
-        Use keyword 'verbatim' to directly add text to append to the query.
-        Common fields: chr (Chromosome), go (Gene Ontology), pmid (PubMed ID), prop (Properties), taxid (Taxonomy ID)
-        References:
-        - https://www.ncbi.nlm.nih.gov/books/NBK3841/#_EntrezGene_Query_Tips_How_to_submit_deta_
-            Official NCBI Help page.
-        - https://www.ncbi.nlm.nih.gov/books/NBK49540/
-            Fields (and abbreviated fields) available for sequence databases (Nucleotide, Protein, EST, GSS), but most
-            of them apply to the NCBI Gene database as well.
-
-    Returns: dict: int -> dict: str -> str or list of str
-      {<NCBI Gene ID>: {'symbol': <gene symbol>, 'name': <gene name>, 'aliases': [aliases]}}
-    '''
-
-    # Check email registered in Biopython
-    if email is not None:
-        Bio.Entrez.email = email
-    if Bio.Entrez.email is None:
-        Bio.Entrez.email = 'A.N.Other@example.com'
-
-    # construct query parameters
-    params = {}
-    defaults = {
-        'orgn': 'Homo sapiens',
-        'prop': 'alive'
-    }
-    if useDefaults:
-        params.update(defaults)
-    params.update(kwargs)
-
-    # build query
-    query = '{}[gene]'.format(term)
-    verbatim = ''
-    if 'verbatim' in params:
-        verbatim = params.pop('verbatim')
-    for key, values in params.items():
-        if isinstance(values, str) or not isinstance(values, Iterable):
-            values = set([values])
-        query += ' AND ({})'.format(' OR '.join(['{}[{}]'.format(value, key) for value in values]))
-    query += verbatim
-    if verbose:
-        print(query)
-
-    # initialize return variable
-    matches = {}
-
-    # submit query
-    handle = Bio.Entrez.esearch(db="gene", term=query)
-    idList = Bio.Entrez.read(handle)['IdList']
-    for id in idList:
-        handle = Bio.Entrez.esummary(db='gene', id=id)
-        record = Bio.Entrez.read(handle)
-        symbol = record['DocumentSummarySet']['DocumentSummary'][0]['Name']
-        name = record['DocumentSummarySet']['DocumentSummary'][0]['Description']
-        aliases = record['DocumentSummarySet']['DocumentSummary'][0]['OtherAliases'].split(', ')
-        terms = [match.lower() for match in [name] + aliases]
-        if (term.lower() in terms):
-            matches[id] = int(id)
-            matches[id] = {'symbol': symbol, 'name': name, 'aliases': aliases}
-    if useSingleIndirectMatch and len(matches) == 0 and len(idList) == 1:
-        handle = Bio.Entrez.esummary(db='gene', id=id)
-        record = Bio.Entrez.read(handle)
-        symbol = record['DocumentSummarySet']['DocumentSummary'][0]['Name']
-        name = record['DocumentSummarySet']['DocumentSummary'][0]['Description']
-        aliases = record['DocumentSummarySet']['DocumentSummary'][0]['OtherAliases'].split(', ')
-        matches[id] = {'symbol': symbol, 'name': name, 'aliases': aliases}
-        if verbose:
-            print(f'{term} failed to match any name or alias, returning the single unique result provided by Entrez.')
-    return matches
-
-def multisearch_NCBIGene(terms, nProc=None, **kwargs):
-    '''
-    Search official human gene names and aliases in NCBI Gene database for terms.
-
-    Args
-    - terms: iterable of str
-        Terms to lookup
-    - email: str
-        email registered with NCBI
-    - nProc: int. default=None
-        Number of processes to use. If None, uses as many processes as available CPUs.
-
-    Returns: dict: str -> dict: int -> dict: str -> str or list of str
-      {<term>: <NCBI Gene ID>: {'symbol': <gene symbol>, 'name': <gene name>, 'aliases': [aliases]}}
-    '''
-
-    if nProc is None:
-        try:
-            nProc = len(os.sched_getaffinity(0))
-        except AttributeError:
-            warnings.warn('Unable to get accurate number of available CPUs. Assuming all CPUs are available.')
-            nProc = os.cpu_count()
-    assert isinstance(nProc, int) and nProc > 0
-
-    results = []
-    with Pool(processes=nProc) as pool:
-        for i in range(len(terms)):
-            results.append(pool.apply_async(search_NCBIGene, (terms[i],), kwargs))
-        return {terms[i]: results[i].get() for i in range(len(terms))}
-
-## UniProt
-
-# See https://www.uniprot.org/help/accession_numbers
-UNIPROT_ACCESSION_REGEX = re.compile(r'[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}')
-
-def convertUniProt(source, to, query, toDf=True):
-    '''
-    Convert database identifiers using UniProt's Retrieve/ID mapping service.
-
-    Args
-    - source: str
-        Query identifier type.
-    - to: str
-        Target identifier type.
-    - query: str
-        Identifiers separated by spaces or new lines.
-    - toDf: bool. default=True
-        Return results as pandas DataFrame.
-
-    Returns: str or pandas.DataFrame
-      UniProt's mapping service returns a tab-delimited table with column headers "From" and "To".
-      If `toDf` is True, the raw text is returned. Otherwise, it is parsed into a DataFrame.
-
-    Reference: https://www.uniprot.org/help/api_idmapping
-    '''
-
-    url = 'https://www.uniprot.org/uploadlists/'
-    params = {
-        'from': source,
-        'to': to,
-        'format': 'tab',
-        'query': query
-    }
-
-    r = requests.post(url=url, data=params)
-    if not r.ok:
-        r.raise_for_status()
-
-    if toDf:
-        return pd.read_csv(io.StringIO(r.text), sep='\t', header=0, index_col=False)
-    return r.text
-
-# endregion --- Database identifier conversion tools
-
-# region --- Sequence alignment tools
+# region ------ Sequence alignment tools
 
 ## BLAST
 # 
@@ -668,7 +493,7 @@ def blastToDf(records):
     Convert BLAST records to DataFrame.
 
     Args
-    - records: list of Bio.Blast.Record
+    - records: iterator of Bio.Blast.Record.Blast
         BLAST records (each record corresponds to 1 query)
 
     Returns: pandas.DataFrame or None (no HSPs in records)
@@ -716,8 +541,9 @@ def blastToDf(records):
 
     Reference
     - See https://www.ncbi.nlm.nih.gov/dtd/NCBI_BlastOutput.mod.dtd for XML DTD schema
+    
+    TODO: add support for iterator of Bio.SearchIO._model.query.QueryResult
     '''
-
     hsps = [] # high-scoring pairs
     for record in records:
         for alignment in record.alignments:
