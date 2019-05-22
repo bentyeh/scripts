@@ -1,4 +1,4 @@
-import gzip, os, re
+import bz2, gzip, lzma, os, re
 
 def createValidPath(s, sub_spaces=None):
     '''
@@ -29,17 +29,22 @@ def createFileObject(file, mode=None):
 
     Args
     - file: str
-        Path to file. If extension ends with '.gz', gzip compression is assumed.
+        Path to file. If ends with '.gz', '.bz2', or '.xz', appropriate compression is assumed.
     - mode: str. default=None
         Mode to open file with.
 
     Returns: file object (io.TextIOBase)
     '''
-
     assert(type(file) is str)
     if file.endswith('.gz'):
         mode = mode if mode is not None else 'rt'
         f = gzip.open(file, mode=mode)
+    elif file.endswith('.bz2'):
+        mode = mode if mode is not None else 'rt'
+        f = bz2.open(file, mode=mode)
+    elif file.endswith('.xz'):
+        mode = mode if mode is not None else 'rt'
+        f = lzma.open(file, mode=mode)
     else:
         mode = mode if mode is not None else 'r'
         f = open(file, mode=mode)
