@@ -2,18 +2,34 @@
 import sys, os
 sys.path.append(os.path.dirname(__file__))
 
-import io, multiprocessing, re, time
+import io, json, multiprocessing, re, time
 from collections.abc import Iterable
 
+import numpy as np
 import pandas as pd
 import requests
 import Bio.Blast.NCBIWWW
 import Bio.SearchIO
+from tqdm import tqdm
 
-import utils_files
-import utils_bio
+import utils_files, utils_bio
 
 # region ------ UniProt
+# 
+# Accession (AC): https://www.uniprot.org/help/accession_numbers
+#   Example: P12345
+# Entry names (formerly ID): https://www.uniprot.org/help/entry_name
+#   Example: AATM_RABIT
+#   Note: Entry names are not stable identifiers and are updated for consistency
+#     (for instance to ensure that related entries have similar names or when a
+#     UniProtKB/TrEMBL entry is integrated into UniProtKB/Swiss-Prot)
+# 
+# Proteins API Notes
+# - Cross-reference databases to use with /proteins/{dbtype}:{dbid} service: https://www.uniprot.org/database/
+
+UNIPROT_ACCESSION_REGEX = re.compile(r'[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}')
+SWISSPROT_ENTRYNAME_REGEX = re.compile(r'[A-Z0-9]{1,5}_[A-Z0-9]{1,5}')
+TREMBL_ENTRYNAME_REGEX = re.compile(UNIPROT_ACCESSION_REGEX.pattern + r'_[A-Z0-9]{1,5}')
 
 PROTEINS_HEADERS = {
     'xml':   'application/xml',
@@ -26,13 +42,421 @@ PROTEINS_HEADERS = {
 
 PROTEINS_BASEURL = 'https://www.ebi.ac.uk/proteins/api'
 
-def get_UniProt(uniprot_id, export, toDf=False):
+# Available columns when querying UniProt
+# - Reference: https://www.uniprot.org/uniprot/#customize-columns
+# - Usage
+#     https://www.uniprot.org/uniprot/?
+#       query=[ accession:<uniprot_ac>[+OR+[...]] | yourlist:<list_id> [filters]]
+#       [&columns=<col1>[,<col2>[,...]]]
+#       [&format=[ fasta | tab | xlsx | xml | rdf | txt | gff | list ]]
+# - Example
+#     https://www.uniprot.org/uniprot/?query=accession:P12345&columns=entry_name,genes,organism&format=tab
+UNIPROT_COLUMNS = {
+    'Entry': 'id',
+    'Entry name': 'entry_name',
+    'Gene names': 'genes',
+    'Gene names (ordered locus)': 'genes_8_OLN_9_',
+    'Gene names (ORF)': 'genes_8_ORF_9_',
+    'Gene names (primary)': 'genes_8_PREFERRED_9_',
+    'Gene names (synonym)': 'genes_8_ALTERNATIVE_9_',
+    'Organism': 'organism',
+    'Organism ID': 'organism-id',
+    'Protein names': 'protein_names',
+    'Proteomes': 'proteome',
+    'Taxonomic lineage': 'lineage_8_ALL_9_',
+    'Virus hosts': 'virus_hosts',
+    'Alternative products (isoforms)': 'comment_8_ALTERNATIVE_PRODUCTS_9_',
+    'Alternative sequence': 'feature_8_ALTERNATIVE_SEQUENCE_9_',
+    'Erroneous gene model prediction': 'comment_8_ERRONEOUS_GENE_MODEL_PREDICTION_9_',
+    'Fragment': 'fragment',
+    'Gene encoded by': 'encodedon',
+    'Length': 'length',
+    'Mass': 'mass',
+    'Mass spectrometry': 'comment_8_MASS_SPECTROMETRY_9_',
+    'Natural variant': 'feature_8_NATURAL_VARIANT_9_',
+    'Non-adjacent residues': 'feature_8_NON_ADJACENT_RESIDUES_9_',
+    'Non-standard residue': 'feature_8_NON_STANDARD_RESIDUE_9_',
+    'Non-terminal residue': 'feature_8_NON_TERMINAL_RESIDUE_9_',
+    'Polymorphism': 'comment_8_POLYMORPHISM_9_',
+    'RNA editing': 'comment_8_RNA_EDITING_9_',
+    'Sequence': 'sequence',
+    'Sequence caution': 'comment_8_SEQUENCE_CAUTION_9_',
+    'Sequence conflict': 'feature_8_SEQUENCE_CONFLICT_9_',
+    'Sequence uncertainty': 'feature_8_SEQUENCE_UNCERTAINTY_9_',
+    'Sequence version': 'version_8_sequence_9_',
+    'Absorption': 'comment_8_ABSORPTION_9_',
+    'Active site': 'feature_8_ACTIVE_SITE_9_',
+    'Activity regulation': 'comment_8_ACTIVITY_REGULATION_9_',
+    'Binding site': 'feature_8_BINDING_SITE_9_',
+    'Calcium binding': 'feature_8_CALCIUM_BIND_9_',
+    'Catalytic activity': 'comment_8_CATALYTIC_ACTIVITY_9_',
+    'Cofactor': 'comment_8_COFACTOR_9_',
+    'DNA binding': 'feature_8_DNA_BINDING_9_',
+    'EC number': 'ec',
+    'Function': 'comment_8_FUNCTION_9_',
+    'Kinetics': 'comment_8_KINETICS_9_',
+    'Metal binding': 'feature_8_METAL_BINDING_9_',
+    'Nucleotide binding': 'feature_8_NP_BIND_9_',
+    'Pathway': 'comment_8_PATHWAY_9_',
+    'pH dependence': 'comment_8_PH_DEPENDENCE_9_',
+    'Redox potential': 'comment_8_REDOX_POTENTIAL_9_',
+    'Rhea Ids': 'rhea-id',
+    'Site': 'feature_8_SITE_9_',
+    'Temperature dependence': 'comment_8_TEMPERATURE_DEPENDENCE_9_',
+    'Annotation': 'annotation_score',
+    'Caution': 'comment_8_CAUTION_9_',
+    'Features': 'features',
+    'Keyword ID': 'keyword-id',
+    'Keywords': 'keywords',
+    'Matched text': 'context',
+    'Miscellaneous': 'comment_8_MISCELLANEOUS_9_',
+    'Protein existence': 'existence',
+    'Reviewed': 'reviewed',
+    'Tools': 'tools',
+    'UniParc': 'uniparcid',
+    'Interacts with': 'interactor',
+    'Subunit structure': 'comment_8_SUBUNIT_STRUCTURE_9_',
+    'Developmental stage': 'comment_8_DEVELOPMENTAL_STAGE_9_',
+    'Induction': 'comment_8_INDUCTION_9_',
+    'Tissue specificity': 'comment_8_TISSUE_SPECIFICITY_9_',
+    'Gene ontology (biological process)': 'go_8_biological_process_9_',
+    'Gene ontology (cellular component)': 'go_8_cellular_component_9_',
+    'Gene ontology (GO)': 'go',
+    'Gene ontology (molecular function)': 'go_8_molecular_function_9_',
+    'Gene ontology IDs': 'go-id',
+    'ChEBI': 'chebi',
+    'ChEBI (Catalytic activity)': 'chebi_8_Catalytic_activity_9_',
+    'ChEBI (Cofactor)': 'chebi_8_Cofactor_9_',
+    'ChEBI IDs': 'chebi-id',
+    'Allergenic properties': 'comment_8_ALLERGENIC_PROPERTIES_9_',
+    'Biotechnological use': 'comment_8_BIOTECHNOLOGICAL_USE_9_',
+    'Disruption phenotype': 'comment_8_DISRUPTION_PHENOTYPE_9_',
+    'Involvement in disease': 'comment_8_INVOLVEMENT_IN_DISEASE_9_',
+    'Mutagenesis': 'feature_8_MUTAGENESIS_9_',
+    'Pharmaceutical use': 'comment_8_PHARMACEUTICAL_USE_9_',
+    'Toxic dose': 'comment_8_TOXIC_DOSE_9_',
+    'Intramembrane': 'feature_8_INTRAMEMBRANE_9_',
+    'Subcellular location': 'comment_8_SUBCELLULAR_LOCATION_9_',
+    'Topological domain': 'feature_8_TOPOLOGICAL_DOMAIN_9_',
+    'Transmembrane': 'feature_8_TRANSMEMBRANE_9_',
+    'Chain': 'feature_8_CHAIN_9_',
+    'Cross-link': 'feature_8_CROSS_LINK_9_',
+    'Disulfide bond': 'feature_8_DISULFIDE_BOND_9_',
+    'Glycosylation': 'feature_8_GLYCOSYLATION_9_',
+    'Initiator methionine': 'feature_8_INITIATOR_METHIONINE_9_',
+    'Lipidation': 'feature_8_LIPIDATION_9_',
+    'Modified residue': 'feature_8_MODIFIED_RESIDUE_9_',
+    'Peptide': 'feature_8_PEPTIDE_9_',
+    'Post-translational modification': 'comment_8_POST-TRANSLATIONAL_MODIFICATION_9_',
+    'Propeptide': 'feature_8_PROPEPTIDE_9_',
+    'Signal peptide': 'feature_8_SIGNAL_9_',
+    'Transit peptide': 'feature_8_TRANSIT_9_',
+    '3D': '3d',
+    'Beta strand': 'feature_8_BETA_STRAND_9_',
+    'Helix': 'feature_8_HELIX_9_',
+    'Turn': 'feature_8_TURN_9_',
+    'Mapped PubMed ID': 'citationmapping',
+    'PubMed ID': 'citation',
+    'Date of creation': 'created',
+    'Date of last modification': 'last-modified',
+    'Date of last sequence modification': 'sequence-modified',
+    'Entry version': 'version_8_entry_9_',
+    'Coiled coil': 'feature_8_COILED_COIL_9_',
+    'Compositional bias': 'feature_8_COMPOSITIONAL_BIAS_9_',
+    'Domain': 'feature_8_DOMAIN_EXTENT_9_',
+    'Motif': 'feature_8_MOTIF_9_',
+    'Protein families': 'families',
+    'Region': 'feature_8_REGION_9_',
+    'Repeat': 'feature_8_REPEAT_9_',
+    'Sequence similarities': 'comment_8_SEQUENCE_SIMILARITIES_9_',
+    'Zinc finger': 'feature_8_ZINC_FINGER_9_',
+    'Taxonomic lineage (all)': 'lineage_8_all_9_',
+    'Taxonomic lineage (CLASS)': 'lineage_8_CLASS_9_',
+    'Taxonomic lineage (COHORT)': 'lineage_8_COHORT_9_',
+    'Taxonomic lineage (FAMILY)': 'lineage_8_FAMILY_9_',
+    'Taxonomic lineage (FORMA)': 'lineage_8_FORMA_9_',
+    'Taxonomic lineage (GENUS)': 'lineage_8_GENUS_9_',
+    'Taxonomic lineage (INFRACLASS)': 'lineage_8_INFRACLASS_9_',
+    'Taxonomic lineage (INFRAORDER)': 'lineage_8_INFRAORDER_9_',
+    'Taxonomic lineage (KINGDOM)': 'lineage_8_KINGDOM_9_',
+    'Taxonomic lineage (ORDER)': 'lineage_8_ORDER_9_',
+    'Taxonomic lineage (PARVORDER)': 'lineage_8_PARVORDER_9_',
+    'Taxonomic lineage (PHYLUM)': 'lineage_8_PHYLUM_9_',
+    'Taxonomic lineage (SPECIES)': 'lineage_8_SPECIES_9_',
+    'Taxonomic lineage (SPECIES_GROUP)': 'lineage_8_SPECIES_GROUP_9_',
+    'Taxonomic lineage (SPECIES_SUBGROUP)': 'lineage_8_SPECIES_SUBGROUP_9_',
+    'Taxonomic lineage (SUBCLASS)': 'lineage_8_SUBCLASS_9_',
+    'Taxonomic lineage (SUBCOHORT)': 'lineage_8_SUBCOHORT_9_',
+    'Taxonomic lineage (SUBFAMILY)': 'lineage_8_SUBFAMILY_9_',
+    'Taxonomic lineage (SUBGENUS)': 'lineage_8_SUBGENUS_9_',
+    'Taxonomic lineage (SUBKINGDOM)': 'lineage_8_SUBKINGDOM_9_',
+    'Taxonomic lineage (SUBORDER)': 'lineage_8_SUBORDER_9_',
+    'Taxonomic lineage (SUBPHYLUM)': 'lineage_8_SUBPHYLUM_9_',
+    'Taxonomic lineage (SUBSPECIES)': 'lineage_8_SUBSPECIES_9_',
+    'Taxonomic lineage (SUBTRIBE)': 'lineage_8_SUBTRIBE_9_',
+    'Taxonomic lineage (SUPERCLASS)': 'lineage_8_SUPERCLASS_9_',
+    'Taxonomic lineage (SUPERFAMILY)': 'lineage_8_SUPERFAMILY_9_',
+    'Taxonomic lineage (SUPERKINGDOM)': 'lineage_8_SUPERKINGDOM_9_',
+    'Taxonomic lineage (SUPERORDER)': 'lineage_8_SUPERORDER_9_',
+    'Taxonomic lineage (SUPERPHYLUM)': 'lineage_8_SUPERPHYLUM_9_',
+    'Taxonomic lineage (TRIBE)': 'lineage_8_TRIBE_9_',
+    'Taxonomic lineage (VARIETAS)': 'lineage_8_VARIETAS_9_',
+    'Taxonomic lineage IDs': 'lineage-id'
+}
+
+# Names of cross-reference databases
+# - ID_TYPE: names used in UniProt's idmapping tables
+#     ftp://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/
+#     Note: PIR is found in idmapping_selected.tab, but not idmapping.tab
+# - Abbreviation: abbreviations used in UniProt's Retrieve/ID mapping service
+UNIPROT_IDTYPE_TO_ABBREVIATION = {
+    'Allergome': 'ALLERGOME_ID',
+    'ArachnoServer': 'ARACHNOSERVER_ID',
+    'Araport': 'ARAPORT_ID',
+    'BioCyc': 'BIOCYC_ID',
+    'BioGrid': 'BIOGRID_ID',
+    'BioMuta': 'BIOMUTA_ID',
+    'CCDS': 'CCDS_ID',
+    'CGD': 'CGD',
+    'ChEMBL': 'CHEMBL_ID',
+    'ChiTaRS': 'CHITARS_ID',
+    'CollecTF': 'COLLECTF_ID',
+    'ComplexPortal': 'COMPLEXPORTAL_ID',
+    'ConoServer': 'CONOSERVER_ID',
+    'CRC64': 'CRC64',
+    'dictyBase': 'DICTYBASE_ID',
+    'DIP': 'DIP_ID',
+    'DisProt': 'DISPROT_ID',
+    'DMDM': 'DMDM_ID',
+    'DNASU': 'DNASU_ID',
+    'DrugBank': 'DRUGBANK_ID',
+    'EchoBASE': 'ECHOBASE_ID',
+    'EcoGene': 'ECOGENE_ID',
+    'eggNOG': 'EGGNOG_ID',
+    'EMBL-CDS': 'EMBL',
+    'EMBL': 'EMBL_ID',
+    'Ensembl': 'ENSEMBL_ID',
+    'EnsemblGenome': 'ENSEMBLGENOME_ID',
+    'EnsemblGenome_PRO': 'ENSEMBLGENOME_PRO_ID',
+    'EnsemblGenome_TRS': 'ENSEMBLGENOME_TRS_ID',
+    'Ensembl_PRO': 'ENSEMBL_PRO_ID',
+    'Ensembl_TRS': 'ENSEMBL_TRS_ID',
+    'ESTHER': 'ESTHER_ID',
+    'euHCVdb': 'EUHCVDB_ID',
+    'EuPathDB': 'EUPATHDB_ID',
+    'FlyBase': 'FLYBASE_ID',
+    'GeneCards': 'GENECARDS_ID',
+    'GeneDB': 'GENEDB_ID',
+    'GeneID': 'P_ENTREZGENEID',
+    'Gene_Name': 'GENENAME',
+    'Gene_OrderedLocusName': None,
+    'Gene_ORFName': None,
+    'GeneReviews': 'GENEREVIEWS_ID',
+    'Gene_Synonym': None,
+    'GeneTree': 'GENETREE_ID',
+    'GeneWiki': 'GENEWIKI_ID',
+    'GenomeRNAi': 'GENOMERNAI_ID',
+    'GI': 'P_GI',
+    'GlyConnect': 'GLYCONNECT_ID',
+    'GuidetoPHARMACOLOGY': 'GUIDETOPHARMACOLOGY_ID',
+    'HGNC': 'HGNC_ID',
+    'H-InvDB': 'H_INVDB_ID',
+    'HOGENOM': 'HOGENOM_ID',
+    'HPA': 'HPA_ID',
+    'KEGG': 'KEGG_ID',
+    'KO': 'KO_ID',
+    'LegioList': 'LEGIOLIST_ID',
+    'Leproma': 'LEPROMA_ID',
+    'MaizeGDB': 'MAIZEGDB_ID',
+    'MEROPS': 'MEROPS_ID',
+    'MGI': 'MGI_ID',
+    'MIM': 'MIM_ID',
+    'MINT': None,
+    'mycoCLAP': 'MYCOCLAP_ID',
+    'NCBI_TaxID': None,
+    'neXtProt': 'NEXTPROT_ID',
+    'OMA': 'OMA_ID',
+    'Orphanet': 'ORPHANET_ID',
+    'OrthoDB': 'ORTHODB_ID',
+    'PATRIC': 'PATRIC_ID',
+    'PDB': 'PDB_ID',
+    'PeroxiBase': 'PEROXIBASE_ID',
+    'PharmGKB': 'PHARMGKB_ID',
+    'PIR': 'PIR',
+    'PomBase': 'POMBASE_ID',
+    'ProteomicsDB': 'PROTEOMICSDB_ID',
+    'PseudoCAP': 'PSEUDOCAP_ID',
+    'Reactome': 'REACTOME_ID',
+    'REBASE': 'REBASE_ID',
+    'RefSeq': 'P_REFSEQ_AC',
+    'RefSeq_NT': 'REFSEQ_NT_ID',
+    'RGD': 'RGD_ID',
+    'SGD': 'SGD_ID',
+    'STRING': 'STRING_ID',
+    'SwissLipids': 'SWISSLIPIDS_ID',
+    'TAIR': None,
+    'TCDB': 'TCDB_ID',
+    'TreeFam': 'TREEFAM_ID',
+    'TubercuList': 'TUBERCULIST_ID',
+    'UCSC': 'UCSC_ID',
+    'UniParc': 'UPARC',
+    'UniPathway': 'UNIPATHWAY_ID',
+    'UniProtKB-ID': 'ID',
+    'UniRef100': 'NF100',
+    'UniRef50': 'NF50',
+    'UniRef90': 'NF90',
+    'VectorBase': 'VECTORBASE_ID',
+    'VGNC': 'VGNC_ID',
+    'WBParaSite': 'WBPARASITE_ID',
+    'World-2DPAGE': 'WORLD_2DPAGE_ID',
+    'WormBase': 'WORMBASE_ID',
+    'WormBase_PRO': 'WORMBASE_PRO_ID',
+    'WormBase_TRS': 'WORMBASE_TRS_ID',
+    'Xenbase': 'XENBASE_ID',
+    'ZFIN': 'ZFIN_ID'
+}
+
+UNIPROT_IDMAPPING_HEADER = ['UniProtKB-AC', 'ID_type', 'ID']
+
+def convert_UniProt(source, to, query, export='Mapping Table', columns=None, include_unmapped=False, toDf=True, auto_method=True):
+    '''
+    Convert database identifiers using UniProt's Retrieve/ID mapping service.
+
+    Args
+    - source: str
+        Query identifier type.
+    - to: str
+        Target identifier type.
+    - query: iterable of str, or io.TextIOBase
+        Iterable of identifiers, or file of identifiers separated by spaces or new lines.
+    - export: str. default='tab'
+        Both long and short-hand formats supported.
+          Format shown in drop-down menu on UniProt's website | Short-hand      | Supported when not mapping to ACC
+          --------------------------------------------------- | --------------- | ---------------------------------
+          FASTA (canonical)                                   | fasta           | no
+          FASTA (canonical & isoform)                         | [not supported] | no
+          Tab-separated                                       | tab             | no
+          Excel                                               | xlsx            | no
+          XML                                                 | xml             | no
+          RDF/XML                                             | rdf             | no
+          Text                                                | txt             | no
+          GFF                                                 | gff             | no
+          Mapping Table                                       | tab             | yes
+          Target List                                         | list            | yes
+    - columns: list of str. default=None
+        Only applicable when mapping to UniProt accessions (to='ACC') and either Tab-separated or Excel formats.
+        List of columns to include - see UNIPROT_COLUMNS.
+        If None, defaults to Entry, Entry name, Reviewed, Protein names, Gene names, Organism, Length
+    - include_unmapped: bool. default=False
+        Also return list of unmapped query identifiers.
+    - toDf: bool. default=True
+        Return results as a DataFrame.
+        Available for FASTA, Tab-separated, Excel, GFF, and Mapping Table formats.
+    - auto_method: bool. default=True
+        If query is a large iterable of str, use the file upload method (more reliably supports large queries).
+
+    Returns
+      `include_unmapped` is True: 2-tuple where the 1st element is as below, and the 2nd element
+        is a list of str (unmapped identifiers)
+      `include_unmapped` is False:
+        - `toDf` is True and applicable: pandas.DataFrame
+          - Mapping to UniProt identifers: Columns specified by `columns`
+          - Otherwise: 'From' and 'To' columns
+        - export = 'Target List' or 'list': list of str
+        - Otherwise: str
+
+    Reference: https://www.uniprot.org/help/api_idmapping
+    '''
+    url_up = 'https://www.uniprot.org/uploadlists/'
+    url_mapping = 'https://www.uniprot.org/mapping/'
+    export_formats = {
+        'FASTA (canonical)': 'fasta',
+        'FASTA (canonical & isoform)': 'fasta',
+        'Tab-separated': 'tab',
+        'Excel': 'xlsx',
+        'XML': 'xml',
+        'RDF/XML': 'rdf',
+        'Text': 'txt',
+        'GFF': 'gff',
+        'Mapping Table': 'tab',
+        'Target List': 'list'
+    }
+
+    if export in export_formats.values():
+        ext = export
+        export = [long for long, short in export_formats.items() if short == export][0]
+    assert export in export_formats
+    ext = export_formats[export]
+
+    data = {'format': ext}
+    if to == 'ACC':
+        if export == 'FASTA (canonical & isoform)':
+            data.update({'include': 'yes'})
+
+        if columns is not None:
+            data.update({'columns': ','.join([UNIPROT_COLUMNS[col] for col in columns])})
+    else:
+        assert export in ('Mapping Table', 'Target List')
+
+    if auto_method and not issubclass(type(query), io.TextIOBase) and len(query) > 1000:
+        query = io.StringIO('\n'.join(list(query)))
+
+    if issubclass(type(query), io.TextIOBase):
+        files = {
+            'landingPage': (None, 'false'),
+            'jobId': (None, ''),
+            'uploadQuery': (None, ''),
+            'url2': (None, ''),
+            'file': ('query', query, 'text/plain'),
+            'from': (None, source),
+            'to': (None, to),
+            'taxon': (None, '')}
+    else:
+        files = None
+        data.update({'from': source, 'to': to, 'query': '\n'.join(query)})
+
+    r = requests.post(url=url_up, files=files, data=data)
+    if not r.ok:
+        r.raise_for_status()
+
+    if r.url.startswith(url_mapping):
+        list_id = r.url.split('/')[-1].split('.')[0]
+    else:
+        list_id = re.search('yourlist:([^&]+)', r.url).groups()[0]
+
+    if to == 'ACC' and export == 'Mapping Table':
+        r = requests.get(url=url_mapping + list_id + '.tab')
+
+    if ext in ('fasta', 'tab', 'xlsx', 'gff') and toDf:
+        if ext == 'tab':
+            mapped = pd.read_csv(io.StringIO(r.text), sep='\t', header=0, index_col=False)
+        elif ext == 'gff':
+            mapped = pd.read_csv(io.StringIO(r.text), sep='\t', header=None, comment='#',
+                                 names=utils_bio.GFF3_COLNAMES, index_col=False)
+        elif ext == 'xlsx':
+            mapped = pd.read_excel(io.BytesIO(r.content))
+        elif ext == 'fasta':
+            mapped = utils_bio.fastaToDf(io.StringIO(r.text), headerParser=utils_bio.parseUniProtHeader)
+    elif ext == 'list':
+        mapped = r.text.splitlines()
+    else:
+        mapped = r.text
+
+    if include_unmapped:
+        r_unmapped = requests.get(url=url_mapping + list_id + '.not')
+        if not r_unmapped.ok:
+            r_unmapped.raise_for_status()
+        unmapped = r_unmapped.text.splitlines()[1:]
+        return (mapped, unmapped)
+    return mapped
+
+def get_UniProt(uniprot_ac, export, toDf=False):
     '''
     Get UniProt entry.
 
     Args
-    - uniprot_id: str
-        UniProt Accession ID (e.g., P12345).
+    - uniprot_ac: str
+        UniProt Accession (e.g., P12345)
     - export: str.
         Format: 'txt', 'fasta', 'xml', 'rdf', 'gff'
     - toDf: bool. default=False
@@ -40,9 +464,8 @@ def get_UniProt(uniprot_id, export, toDf=False):
 
     Returns: str or pandas.DataFrame
     '''
-
     assert export in ('txt', 'fasta', 'xml', 'rdf', 'gff')
-    url = f'https://www.uniprot.org/uniprot/{uniprot_id}.{export}'
+    url = f'https://www.uniprot.org/uniprot/{uniprot_ac}.{export}'
     headers = {'accept': 'text/html'}
     r = requests.get(url=url, headers=headers)
     if not r.ok:
@@ -50,7 +473,7 @@ def get_UniProt(uniprot_id, export, toDf=False):
 
     if toDf:
         if export == 'fasta':
-            return utils_bio.fastaToDF(io.StringIO(r.text), headerParser=utils_bio.parseUniProtHeader)
+            return utils_bio.fastaToDf(io.StringIO(r.text), headerParser=utils_bio.parseUniProtHeader)
         if export == 'gff':
             return pd.read_csv(io.StringIO(r.text), sep='\t', header=None, comment='#',
                                names=utils_bio.GFF3_COLNAMES, index_col=False)
@@ -66,7 +489,7 @@ def get_Proteins(service='/proteins', entry=None, export='json', verbose=False, 
     - service: str. default='/proteins'
         Service requested through REST interface. See examples below.
     - entry: dict. default=None
-        Desired entry for services that do not take key/value pairs. See examples below.
+        Required parameter(s) specified with brackets '{param}' in `service`.
     - export: str. default='json'
         Response content type: 'fasta', 'json', 'xml', 'flat' (UniProt text format), 'gff', or 'peff'.
         All services can return XML or JSON formatted results. Other return types are service-specific.
@@ -82,14 +505,16 @@ def get_Proteins(service='/proteins', entry=None, export='json', verbose=False, 
     Returns: str
 
     Examples
-    - Request single protein entry, FASTA format
-        Desired GET request: https://www.ebi.ac.uk/proteins/api/proteins/P24928
-        --> get_Proteins(service='/proteins/{accession}', entry={'accession': 'P24928'}, export='fasta')
-    - Request multiple protein entries, JSON format
-        Desired GET request: https://www.ebi.ac.uk/proteins/api/proteins?accession=P24928,P30876
-        --> get_Proteins(service='/proteins', entry=None, export='json', accession='P24928,P30876')
+    - Single protein entry, FASTA format
+        GET request: https://www.ebi.ac.uk/proteins/api/proteins/P12345
+        --> get_Proteins(service='/proteins/{accession}', entry={'accession': 'P12345'}, export='fasta')
+    - Multiple protein entries, JSON format
+        GET request: https://www.ebi.ac.uk/proteins/api/proteins?accession=P12345,P67890
+        --> get_Proteins(service='/proteins', entry=None, export='json', accession='P12345,P67890')
+    - Single protein entry by cross-reference, JSON format
+        GET request: https://www.ebi.ac.uk/proteins/api/proteins/EMBL:AAGW02052878
+        --> get_Proteins(service='/proteins/{dbtype}:{dbid}', entry={'dbtype': 'EMBL', 'dbid': 'AAGW02052878'})
     '''
-
     if re.search(r'\{.*\}', service) and entry is not None:
         service = service.format(**entry)
     url = PROTEINS_BASEURL + service
@@ -103,38 +528,133 @@ def get_Proteins(service='/proteins', entry=None, export='json', verbose=False, 
         r.raise_for_status()
     return r.text
 
+def get_Proteins_taxa(uniprot_acs, rank=None, cache=None, **kwargs):
+    '''
+    Lookup parent taxa of a protein at a given rank.
+
+    Args
+    - uniprot_ac: list of str
+        UniProt Accessions (e.g., P12345)
+    - rank: str. default=None
+        Taxonomic rank. See NCBI_TAXONOMY_RANKS.
+        If None, returns the taxonomy of the protein.
+    - cache: dict of str -> int. default=None
+        Map of taxa of input proteins to parent taxa at given rank.
+    - **kwargs: additional arguments to pass to get_taxon_at_rank()
+        Only applicable if rank is not None.
+
+    Returns: dict of str -> int[, dict of int -> int]
+      Map of protein to parent taxa id at a given rank.
+      [If rank is not None] Map of taxa id of input proteins to parent taxa id at given rank.
+    '''
+    max_query_size = 100
+    taxa = {}
+    for i in range(int(np.ceil(len(uniprot_acs)/max_query_size))):
+        proteins = uniprot_acs[i*max_query_size:(i+1)*max_query_size]
+        results = get_Proteins(service='/proteins', entry=None, export='json', accession=','.join(proteins))
+        results = json.loads(results)
+        for protein in results:
+            taxa[protein['accession']] = protein['organism']['taxonomy']
+
+    if rank is None:
+        return taxa
+
+    if cache is None:
+        cache = {}
+
+    taxa_at_rank = get_taxon_at_rank(list(set(taxa.values()) - set(cache.keys())), rank=rank, **kwargs)
+    taxa_at_rank.update(cache)
+    return ({acc: taxa_at_rank[taxa[acc]] for acc in taxa}, taxa_at_rank)
+
+def get_taxon_at_rank(taxa, rank, check_self=True, nproc=1, verbose=True):
+    '''
+    Lookup parent taxa at a given rank.
+
+    Args
+    - taxa: list of int
+        Taxa to lookup
+    - rank: str
+        Taxonomic rank. See NCBI_TAXONOMY_RANKS.
+    - check_self: bool. default=True
+        Before looking up full lineage, check if input taxa are already at desired rank.
+    - nproc: int. default=1
+        Number of processes to use. The EMBL server appears fairly robust to >10 simultaneous requests.
+    - verbose: bool. default=True
+        Show progress.
+
+    Returns: dict of int -> int
+      Map input taxa to parent taxa at a given rank. If no parent taxa at given
+      rank exists (e.g., the rank provided is below the rank of the input taxa),
+      the value of such input taxa will be None.
+    '''
+    d = {taxon: None for taxon in taxa}
+    range_wrap = tqdm if verbose else lambda x: x
+
+    max_query_size = 50
+    if check_self:
+        if verbose:
+            print('Checking if input taxa are already at desired rank ...')
+        for i in range_wrap(range(int(np.ceil(len(taxa)/max_query_size)))):
+            query = ','.join([str(i) for i in taxa[i*max_query_size:(i+1)*max_query_size]])
+            results = get_Proteins(service='/taxonomy/ids/{ids}/node', entry={'ids': query}, export='json')
+            results = json.loads(results)['taxonomies']
+            for taxon in results:
+                if taxon.get('rank') == rank:
+                    d[taxon['taxonomyId']] = taxon['taxonomyId']
+
+    results = []
+    with multiprocessing.Pool(nproc) as pool:
+        for taxon in set(taxa) - set([k for k in d.keys() if d[k] is not None]):
+            results.append(
+                pool.apply_async(
+                    get_Proteins,
+                    tuple(),
+                    {'service': '/taxonomy/lineage/{id}', 'entry': {'id': taxon}, 'export': 'json'}))
+        pool.close()
+        pool.join()
+
+    lineages = [result.get() for result in results]
+    for lineage in lineages:
+        nodes = json.loads(lineage)['taxonomies']
+        for node in nodes:
+            if node['rank'] == rank:
+                d[nodes[0]['taxonomyId']] = node['taxonomyId']
+                break
+    return d
+
 # endregion --- UniProt
 
 # region ------ InterPro
 
-URL_InterPro_protein = 'https://www.ebi.ac.uk/interpro/protein/'
+INTERPRO_PROTEIN_URL = 'https://www.ebi.ac.uk/interpro/protein/'
 
-regex_InterPro_GOmap = re.compile(
+INTERPRO_GOMAP_REGEX = re.compile(
     r'InterPro:(?P<InterPro_ID>[^\s]+)\s+' +
     r'(?P<InterPro_desc>[^>]+)\s+[>]\s+' + 
     r'GO:(?P<GO_desc>[^;]+)\s+[;]\s+' +
     r'(?P<GO_ID>GO[:]\d+)'
 )
 
-def get_InterPro_protein(uniprot_id, export='tsv', toDf=True):
+def get_InterPro_protein(uniprot_ac, export='tsv', toDf=True):
     '''
     Get InterPro protein sequence or entry annotation table.
 
     Args
-    - uniprot_id: str
+    - uniprot_ac: str
+        UniProt Accession (e.g., P12345)
     - export: str. default='tsv'
         'tsv' or 'fasta'
     - toDF: bool. default=True
         Parse data into a pandas.DataFrame. Otherwise returns the raw text.
         - export=='tsv': parse TSV format file directly into data frame
-        - export=='fasta': parse FASTA to pandas.DataFrame using utils_bio.fastaToDF()
+        - export=='fasta': parse FASTA to pandas.DataFrame using utils_bio.fastaToDf()
 
     Returns: str or pandas.DataFrame
     '''
 
     assert export in ('tsv', 'fasta')
 
-    url = URL_InterPro_protein + uniprot_id
+    url = INTERPRO_PROTEIN_URL + uniprot_ac
     headers = {'accept': 'text/html'}
     params = {'export': export}
     r = requests.get(url=url, params=params, headers=headers)
@@ -150,7 +670,7 @@ def get_InterPro_protein(uniprot_id, export='tsv', toDf=True):
         if export == 'tsv':
             return pd.read_csv(io.StringIO(text), sep='\t', index_col=False)
         else:
-            return utils_bio.fastaToDF(io.StringIO(r.text), headerParser=utils_bio.parseDefaultHeader)
+            return utils_bio.fastaToDf(io.StringIO(r.text), headerParser=utils_bio.parseDefaultHeader)
     return text
 
 def process_InterPro_GOmap(path):
@@ -168,7 +688,7 @@ def process_InterPro_GOmap(path):
     lines = utils_files.readFile(path)
     result = []
     for line in lines:
-        m = regex_InterPro_GOmap.match(line)
+        m = INTERPRO_GOMAP_REGEX.match(line)
         if m is not None:
             data = m.groupdict()
             data = {key: value.strip() for key, value in data.items()}
@@ -493,8 +1013,61 @@ def get_QuickGO_secondaryIds(goIds):
 # endregion --- QuickGO
 
 # region ------ NCBI
+# 
+# Accession numbers
+# - Sequence ID format: https://ncbi.github.io/cxx-toolkit/pages/ch_demo#ch_demo.id1_fetch.html_ref_fasta
+#   - Also see https://blast.advbiocomp.com/doc/FAQ-Indexing.html and 
+#     https://en.wikipedia.org/wiki/FASTA_format#NCBI_identifiers
+# - Database-specific formats
+#   - GenBank: https://www.ncbi.nlm.nih.gov/Sequin/acc.html
+#   - RefSeq: https://www.ncbi.nlm.nih.gov/books/NBK21091/table/ch18.T.refseq_accession_numbers_and_mole/
+
+NCBI_IDTYPE = {
+    'lcl': 'local',
+    'bbs': 'GenInfo backbone seqid',
+    'bbm': 'GenInfo backbone moltype',
+    'gim': 'GenInfo import ID',
+    'gb' : 'GenBank',
+    'emb': 'EMBL',
+    'pir': 'PIR',
+    'sp' : 'SWISS-PROT',
+    'pat': 'patent',
+    'pgp': 'pre-grant patent',
+    'ref': 'RefSeq',
+    'gnl': 'general database reference',
+    'gi' : 'GenInfo integrated database',
+    'dbj': 'DDBJ',
+    'prf': 'PRF',
+    'pdb': 'PDB',
+    'tpg': 'third-party GenBank',
+    'tpe': 'third-party EMBL',
+    'tpd': 'third-party DDBJ',
+    'tr' : 'TrEMBL',
+    'gpp': 'genome pipeline',
+    'nat': 'named annotation track'
+}
+
+NCBI_IDTYPE_TO_UNIPROT_IDTYPE = {
+    'gb' : 'EMBL-CDS',
+    'emb': 'EMBL-CDS',
+    'ref': 'RefSeq',
+    'gi' : 'GI',
+    'ddj': 'EMBL-CDS',
+    'pdb': 'PDB',
+    'pir': 'PIR',
+    'tgp': 'EMBL-CDS',
+    'tpe': 'EMBL-CDS',
+    'tpd': 'EMBL-CDS'
+}
 
 NCBI_BLAST_URL = 'https://blast.ncbi.nlm.nih.gov/Blast.cgi'
+
+NCBI_TAXONOMY_RANKS = [
+    'no rank', 'superkingdom', 'genus', 'species', 'order', 'family', 'subspecies', 'subfamily',
+    'tribe', 'phylum', 'class', 'species group', 'forma', 'suborder', 'subclass', 'varietas',
+    'kingdom', 'subphylum', 'infraorder', 'superfamily', 'infraclass', 'superorder', 'subgenus',
+    'superclass', 'parvorder', 'superphylum', 'species subgroup', 'subcohort', 'cohort', 'subtribe',
+    'section', 'series', 'subkingdom', 'subsection']
 
 def blast_delete(rids, url_base=NCBI_BLAST_URL, verbose=True, **kwargs):
     '''
@@ -527,13 +1100,13 @@ def blast_submit(program, database, query=None, sequence=None, url_base=NCBI_BLA
                  composition_based_statistics=None, entrez_query='(none)', matrix_name=None,
                  matrix=None, expect=None, filter=None, gapcosts=None, hitlist_size=None,
                  nucl_penalty=None, nucl_reward=None, threshold=None, word_size=None,
-                 lock=None, server_delay=10):
+                 ncbi_gi=None, lock=None, server_delay=10):
     '''
     Submit BLAST query and return Request ID (RID).
 
-    BLAST Common URL API Args: https://ncbi.github.io/blast-cloud/dev/api.html
+    BLAST Common URL API Parameters: https://ncbi.github.io/blast-cloud/dev/api.html
     - program: str
-        blastn, megablast, blastp, blastx, tblastn, or tblastx
+        One of blastn, blastp, blastx, tblastn, tblastx. To enable megablast, use PROGRAM=blastn&MEGABLAST=on.
     - database: str
         For DNA
           nt: Nucleotide collection
@@ -549,29 +1122,40 @@ def blast_submit(program, database, query=None, sequence=None, url_base=NCBI_BLA
         Aliased by `sequence` (used by Biopython's qblast()). `query` takes precedence if both arguments are given.
     - composition_based_statistics: int. default=None
         Matrix adjustment method to compensate for amino acid composition of sequences.
-        0 (No adjustment), 1 (Composition-based statistics), 2 (Conditional compositional
-        score matrix adjustment), 3 (Universal compositional score matrix adjustment)
+          0 (No adjustment), 1 (Composition-based statistics), 2 (Conditional compositional
+          score matrix adjustment), 3 (Universal compositional score matrix adjustment)
+        If None, appears to default to 2.
     - entrez_query: str. default='(none)'
         Note: This is unofficially supported by the NCBI BLAST server.
     - matrix: str. default=None
-        If None, the server currently defaults to 'BLOSUM62'.
         Aliased by `matrix_name` (used by Biopython's qblast()). `matrix` takes precedence if both arguments are give.
+        If None, defaults to 'BLOSUM62'.
     - expect: float. default=None.
         Expect value.
+        If None, appears to default to 10.
     - filter: str. default=None.
         Low complexity filtering. 'F' to disable. 'T' or 'L' to enable. Prepend 'm' for mask at lookup (e.g., 'mL')
+        If None, appears to default to 'F'.
     - gapcosts: str. default=None
         Gap existence and extension costs. Pair of positive integers separated by a space such as '11 1'.
+        If None, appears to default to '11 1'.
     - hitlist_size: int. default=None
         Number of databases sequences to keep
+        If None, appears to default to 100.
     - nucl_penalty: int. default=None
         Cost for mismatched bases (BLASTN and megaBLAST)
     - nucl_reward: int. default=None
         Reward for matching bases (BLASTN and megaBLAST)
     - threshold: int. default=None
-        Neighboring score for initial words. Positive integer (BLASTP default is 11). Does not apply to BLASTN or MegaBLAST).
+        Neighboring score for initial words. Positive integer (BLASTP default is 11). Does not apply to BLASTN or MegaBLAST.
+        If None, the value depends on word_size.
+          blastp - (word_size, threshold): (3, 11), (6, 21)
     - word_size: int. default=None
-        Size of word for initial matches
+        Size of word for initial matches.
+        If None, appears to default to 3.
+    - ncbi_gi: str. default=None
+        'T' or 'F'. Show NCBI GIs in report.
+        Does not appear to have any effect. Empirically, GIs are included only if entrez_query is not '(none)'
 
     Args
     - url_base: str. default=NCBI_BLAST_URL
@@ -584,6 +1168,10 @@ def blast_submit(program, database, query=None, sequence=None, url_base=NCBI_BLA
 
     Returns: str or requests.Response
       Request ID (RID). Returns the request response if unable to find RID in response (e.g., unsuccessful submission).
+
+    Notes
+    - Officially documented BLAST parameters defaults are stated as defaults. Empirically observed defaults
+      are stated as 'appears to default to'.
     '''
     assert (query is not None) or (sequence is not None)
     if query is None:
@@ -608,6 +1196,7 @@ def blast_submit(program, database, query=None, sequence=None, url_base=NCBI_BLA
         'THRESHOLD': threshold,
         'WORD_SIZE': word_size,
         'COMPOSITION_BASED_STATISTICS': composition_based_statistics,
+        'NCBI_GI': ncbi_gi,
         'ENTREZ_QUERY': entrez_query
     }
     data = {k: v for k, v in data.items() if v is not None}
@@ -644,8 +1233,11 @@ def blast_get(rid, url_base=NCBI_BLAST_URL, no_wait=True,
         HTML (default if None), Text, XML, XML2, JSON2, or Tabular
     - ncbi_gi: str. default=None
         'T' or 'F'. Show NCBI GIs in report.
+        Does not appear to have any effect. Empirically, GIs are included only if entrez_query was not '(none)'
+        in the original BLAST query submission.
     - hitlist_size: int. default=None
         Number of databases sequences to keep
+        If None, appears to default to 100.
 
     Args
     - rid: str
@@ -717,7 +1309,7 @@ def blast_get(rid, url_base=NCBI_BLAST_URL, no_wait=True,
 
     return io.StringIO(results)
 
-def my_qblast(program, database, query=None, sequence=None, semaphore=None, queue=None, **kwargs):
+def my_qblast(program, database, query=None, sequence=None, semaphore=None, queue=None, job_title=None, **kwargs):
     '''
     Submit queries to NCBI BLAST server using the Common URL API. Supports multiprocessing
     synchronization while respecting server limits.
@@ -734,6 +1326,7 @@ def my_qblast(program, database, query=None, sequence=None, semaphore=None, queu
     - Reset arguments to default values
         expect=None, hitlist_size=None, alignments=None, descriptions=None, format_type=None
     - New arguments
+      - job_title: str
       - Aliases to match argument names of the BLAST Common URL API
         - matrix: higher precedence alias of matrix_name
         - query: higher precedence alias of sequence
@@ -742,7 +1335,7 @@ def my_qblast(program, database, query=None, sequence=None, semaphore=None, queu
             Once acquired, grants exclusive contact with server. Any server delays are applied before
             releasing the lock.
         - queue: multiprocessing.Queue. default=None
-            Queue into which to pass (sequence, RID) tuple to communicate with parent process.
+            Queue into which to pass (job_title, RID) or (sequence, RID) tuple to communicate with parent process.
         - semaphore: multiprocessing.Semaphore. default=None
             Semaphore to limit number of parallel requests to the server.
       - Server limits
@@ -758,7 +1351,13 @@ def my_qblast(program, database, query=None, sequence=None, semaphore=None, queu
       If initial BLAST query submission is unsuccessful, returns the Response object.
     '''
     assert (query is not None) or (sequence is not None)
-    kwargs.update({'program': program, 'database': database, 'query': query, 'sequence': sequence})
+    kwargs.update({
+        'program': program,
+        'database': database,
+        'query': query,
+        'sequence': sequence,
+        'job_title': job_title
+    })
     if semaphore is None:
         semaphore = multiprocessing.Semaphore()
 
@@ -777,7 +1376,9 @@ def my_qblast(program, database, query=None, sequence=None, semaphore=None, queu
         return rid
 
     if queue is not None:
-        queue.put((sequence, rid))
+        if job_title is None:
+            job_title = sequence
+        queue.put((job_title, rid))
 
     kwargs['rid'] = rid
     result = blast_get(**{arg: kwargs[arg] for arg in get_args if arg in kwargs})
@@ -790,7 +1391,7 @@ def blastAndParse(blast_fun=my_qblast, save=None, parse=None, parse_type=None, p
 
     Args
     - blast_fun: function. default=my_qblast
-        BLAST function. Should accept kwargs and return a file object (e.g., io.StringIO).
+        BLAST function. Should accept kwargs and return a file object (subclass of io.IOBase, e.g., io.StringIO).
     - save: str. default=None
         Path to save raw BLAST results.
     - parse: str. default=None
@@ -814,7 +1415,6 @@ def blastAndParse(blast_fun=my_qblast, save=None, parse=None, parse_type=None, p
     - Any (sub)directories required for the paths provided in save and parse will be automatically created.
     - Gzip-compression is automatically applied if a `save` or `parse_name` path ends with '.gz'
     '''
-
     # Formats supported by BioPython's SearchIO module
     # Note that SearchIO supports reading BLAST Text format via 'blast-text', but writing is not supported
     parse_types = {'XML': 'blast-xml', 'Tabular': 'blast-tab'}
@@ -825,6 +1425,11 @@ def blastAndParse(blast_fun=my_qblast, save=None, parse=None, parse_type=None, p
     except Exception as err:
         print(err, file=log)
         return None
+
+    if not issubclass(type(result), io.IOBase):
+        print(('blast_fun() did not return a file object (subclass of io.IOBase). '
+               'Results could not be saved.'), file=log)
+        return result
 
     if save is not None:
         os.makedirs(os.path.dirname(save), exist_ok=True)
@@ -848,7 +1453,7 @@ def blastAndParse(blast_fun=my_qblast, save=None, parse=None, parse_type=None, p
                 else:
                     filename = parse_name(qresult)
                 with utils_files.createFileObject(os.path.join(parse, filename), 'wt') as f:
-                    Bio.SearchIO.write(qresult, f, parse_types[format_type])
+                    Bio.SearchIO.write(qresult, f, parse_types[parse_type])
         else:
             print(f'Parsing of format_type {parse_type} is not supported.', file=log)
     return result
@@ -1008,5 +1613,124 @@ def blastp_post(**kwargs):
 
     r = requests.post(url=Bio.Blast.NCBIWWW.NCBI_BLAST_URL, files=data, allow_redirects=False)
     return r
+
+def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=True, verbose=True, **kwargs):
+    '''
+    Search official human gene names and aliases in NCBI Gene database for a match to term, returning official IDs,
+    names, and aliases.
+
+    Dependencies: Biopython
+
+    Args
+    - term: iterable of str
+        Gene name / alias
+    - email: str. default=None
+        Email registered with NCBI, used to set Bio.Entrez.email. If None, defaults to 'A.N.Other@example.com'.
+    - useDefaults: bool. default=True
+        Apply the following fields to the query:
+        - orgn: 'Homo sapiens'
+        - prop: 'alive'
+    - useSingleIndirectMatch: bool. default=True
+        If the Entrez Gene Database query returns only 1 NCBI Gene ID, use the match even if the
+        term does not exactly match the gene symbol or an alias.
+    - verbose: bool. default=True
+        Print submitted query.
+    - kwargs
+        Additional fields to add to the query. If multiple values are given, an OR relationship is assumed.
+        Use keyword 'verbatim' to directly add text to append to the query.
+        Common fields: chr (Chromosome), go (Gene Ontology), pmid (PubMed ID), prop (Properties), taxid (Taxonomy ID)
+        References:
+        - https://www.ncbi.nlm.nih.gov/books/NBK3841/#_EntrezGene_Query_Tips_How_to_submit_deta_
+            Official NCBI Help page.
+        - https://www.ncbi.nlm.nih.gov/books/NBK49540/
+            Fields (and abbreviated fields) available for sequence databases (Nucleotide, Protein, EST, GSS), but most
+            of them apply to the NCBI Gene database as well.
+
+    Returns: dict: int -> dict: str -> str or list of str
+      {<NCBI Gene ID>: {'symbol': <gene symbol>, 'name': <gene name>, 'aliases': [aliases]}}
+    '''
+
+    # Check email registered in Biopython
+    Bio.Entrez.email = email if email is not None else 'A.N.Other@example.com'
+
+    # construct query parameters
+    params = {}
+    defaults = {
+        'orgn': 'Homo sapiens',
+        'prop': 'alive'
+    }
+    if useDefaults:
+        params.update(defaults)
+    params.update(kwargs)
+
+    # build query
+    query = '{}[gene]'.format(term)
+    verbatim = ''
+    if 'verbatim' in params:
+        verbatim = params.pop('verbatim')
+    for key, values in params.items():
+        if isinstance(values, str) or not isinstance(values, Iterable):
+            values = set([values])
+        query += ' AND ({})'.format(' OR '.join(['{}[{}]'.format(value, key) for value in values]))
+    query += verbatim
+    if verbose:
+        print(query)
+
+    # initialize return variable
+    matches = {}
+
+    # submit query
+    handle = Bio.Entrez.esearch(db="gene", term=query)
+    idList = Bio.Entrez.read(handle)['IdList']
+    for id in idList:
+        handle = Bio.Entrez.esummary(db='gene', id=id)
+        record = Bio.Entrez.read(handle)
+        symbol = record['DocumentSummarySet']['DocumentSummary'][0]['Name']
+        name = record['DocumentSummarySet']['DocumentSummary'][0]['Description']
+        aliases = record['DocumentSummarySet']['DocumentSummary'][0]['OtherAliases'].split(', ')
+        terms = [match.lower() for match in [name] + aliases]
+        if (term.lower() in terms):
+            matches[id] = int(id)
+            matches[id] = {'symbol': symbol, 'name': name, 'aliases': aliases}
+    if useSingleIndirectMatch and len(matches) == 0 and len(idList) == 1:
+        handle = Bio.Entrez.esummary(db='gene', id=id)
+        record = Bio.Entrez.read(handle)
+        symbol = record['DocumentSummarySet']['DocumentSummary'][0]['Name']
+        name = record['DocumentSummarySet']['DocumentSummary'][0]['Description']
+        aliases = record['DocumentSummarySet']['DocumentSummary'][0]['OtherAliases'].split(', ')
+        matches[id] = {'symbol': symbol, 'name': name, 'aliases': aliases}
+        if verbose:
+            print(f'{term} failed to match any name or alias, returning the single unique result provided by Entrez.')
+    return matches
+
+def multisearch_NCBIGene(terms, nProc=None, **kwargs):
+    '''
+    Search official human gene names and aliases in NCBI Gene database for terms.
+
+    Args
+    - terms: iterable of str
+        Terms to lookup
+    - email: str
+        email registered with NCBI
+    - nProc: int. default=None
+        Number of processes to use. If None, uses as many processes as available CPUs.
+
+    Returns: dict: str -> dict: int -> dict: str -> str or list of str
+      {<term>: <NCBI Gene ID>: {'symbol': <gene symbol>, 'name': <gene name>, 'aliases': [aliases]}}
+    '''
+
+    if nProc is None:
+        try:
+            nProc = len(os.sched_getaffinity(0))
+        except AttributeError:
+            warnings.warn('Unable to get accurate number of available CPUs. Assuming all CPUs are available.')
+            nProc = os.cpu_count()
+    assert isinstance(nProc, int) and nProc > 0
+
+    results = []
+    with Pool(processes=nProc) as pool:
+        for i in range(len(terms)):
+            results.append(pool.apply_async(search_NCBIGene, (terms[i],), kwargs))
+        return {terms[i]: results[i].get() for i in range(len(terms))}
 
 # endregion --- NCBI
