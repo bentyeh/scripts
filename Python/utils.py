@@ -433,15 +433,15 @@ class ThreadPool:
                 else:
                     error.append(name)
             queued = [name for name, _ in self.queue]
-        never_run = self.names - set(running + success + error + queued)
-        if _print:
-            print('Never run:', never_run, end='\n\n')
-            print('Queued:', queued, end='\n\n')
-            print('Running:', running, end='\n\n')
-            print('Finished with error:', error, end='\n\n')
-            print('Finished successfully:', success)
-        if _return:
-            return (never_run, queued, running, error, success)
+            never_run = self.names - set(running + success + error + queued)
+            if _print:
+                print('Never run:', never_run, end='\n\n')
+                print('Queued:', queued, end='\n\n')
+                print('Running:', running, end='\n\n')
+                print('Finished with error:', error, end='\n\n')
+                print('Finished successfully:', success, flush=True)
+            if _return:
+                return (never_run, queued, running, error, success)
 
     def terminate(self):
         with self.queue_lock:
