@@ -74,7 +74,7 @@ def shard_df_pandas(file_in, folder_out, col, sep, header=None, chunksize=None,
       if nproc is large and/or chunksize is large.
     '''
     if ext is None:
-        m = re.search('\.[^.\s]+(\.(gz|xz|zip|bz2))?$', file_in)
+        m = re.search(r'\.[^.\s]+(\.(gz|xz|zip|bz2))?$', file_in)
         ext = '' if m is None else m.group()
     
     if chunksize is not None and chunksize > os.path.getsize(file_in):
@@ -142,7 +142,7 @@ def shard_df(file_in, folder_out, col, sep=None, start=0, end=None, flush=None, 
     '''
     # automatically detect extension
     if ext is None:
-        m = re.search('\.[^.\s]+(\.(gz|xz|zip|bz2))?$', file_in)
+        m = re.search(r'\.[^.\s]+(\.(gz|xz|zip|bz2))?$', file_in)
         ext = '' if m is None else m.group()
     
     file_size = os.path.getsize(file_in)
