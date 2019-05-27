@@ -1,4 +1,4 @@
-import multiprocessing, os, queue, signal, subprocess, threading, time
+import multiprocessing, os, queue, signal, subprocess, sys, threading, time
 import numpy as np
 import pandas as pd
 
@@ -322,23 +322,25 @@ class ThreadPool:
             Keyword arguments to pass to subprocess.Popen()
             Keys (str) are argument names. Some of the args listed below:
             - args: iterable of str, or str
-                Sequence of program arguments, where the program to execute is the first item in args
+                Sequence of program arguments, where the program to execute is the first item in args.
                 On POSIX, if args is a string, the string is interpreted as the name or path of the program to execute.
             - preexec_fn: callable
                 Called in the child process just before the child is executed
         - ignore_sigint: bool. default=True
-            Ignore SIGINT (e.g., Ctrl-C) signals sent to worker processes. Useful to prevent
-            keyboard interrupts from interruping ThreadPool in interactive sessions (e.g., Jupyter Notebook).
+            Ignore SIGINT (e.g., Ctrl-C) signals sent to worker processes. Useful to prevent keyboard interrupts from
+            interruping ThreadPool in interactive sessions (e.g., Jupyter Notebook).
             Call ThreadPool.terminate() to terminate subprocesses.
         '''
-        assert name not in self.names
-        assert not self.terminated
-        self.names.add(name)
-        if ignore_sigint:
-            cmd.setdefault('preexec_fn', lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
         with self.queue_lock:
             if self.terminated:
+                print('Pool has been terminated and can no longer schedule commands.', file=sys.stderr)
                 return
+            if name in self.names:
+                print(f'{name} has already been used as the name of a process. Not scheduling ...', file=sys.stderr)
+                return
+            self.names.add(name)
+            if ignore_sigint:
+                cmd.setdefault('preexec_fn', lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
             self.queue.append((name, cmd))
             self.count += 1
             self.thunk_scheduler.release()
@@ -365,15 +367,15 @@ class ThreadPool:
 
             # dequeue the least recently scheduled function
             # put a copy of that function in a place where the selected worker (and only that worker) can find it
-
             with self.queue_lock:
                 if not self.terminated:
                     name, cmd = self.queue.pop(0)
+                    self.worker_data[i].name = name
+                    self.worker_data[i].cmd = cmd
                 else:
                     self.worker_data[i].available = True
+                    self.worker_available.release()
                     continue
-            self.worker_data[i].name = name
-            self.worker_data[i].cmd = cmd
 
             # signal the worker thread to execute the thunk
             self.worker_data[i].execute.release()
@@ -390,15 +392,25 @@ class ThreadPool:
                 return
 
             # invoke the function, wait for it to execute
-            name = self.worker_data[i].name
-            cmd = self.worker_data[i].cmd
-            p = subprocess.Popen(**cmd)
-            self.running[name] = p
+            # acquiring the queue_lock is necessary to prevent a race condition with terminate()
+            with self.queue_lock:
+                if self.terminated:
+                    self.worker_data[i].available = True
+                    self.worker_data[i].name = None
+                    self.worker_data[i].cmd = None
+                    self.worker_available.release()
+                    continue
+                name = self.worker_data[i].name
+                cmd = self.worker_data[i].cmd
+                p = subprocess.Popen(**cmd)
+                self.running[name] = p
 
-            # if terminate() was called before adding p to self.running,
-            # manually terminate the subprocess
-            if self.terminated and p.poll() is None:
-                p.terminate()
+            # Calling p.wait() without any lock assumes that it is thread-safe, which appears to be the case based on
+            # https://bugs.python.org/issue21291. The subprocess module also only notes a lack of thread-safety once
+            # when using the preexec_fn parameter with subprocess.Popen(). Specifically, we assume that there is no race
+            # condition involved between calling p.wait() and p.terminate().
+            # 
+            # Note: subprocess.Popen.wait() is currently implemented by CPython using busy waiting :(
             p.wait()
 
             with self.cv:
