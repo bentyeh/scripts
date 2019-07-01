@@ -52,6 +52,38 @@ def wrap_signal_handler(fun, sig, handler=signal.SIG_DFL):
         return fun(*args, **kwargs)
     return newfun
 
+def intervals_merge(intervals):
+    '''
+    Merge intervals.
+    
+    Args
+    - intervals: list of 2-tuples of real numbers
+        List of (start, stop) intervals
+    
+    Returns: list of 2-tupes of real numbers
+    '''
+    n_intervals = len(intervals)
+    if n_intervals < 2:
+        return intervals
+    
+    start_dtype, end_dtype = int, int
+    if any([np.issubdtype(type(interval[0]), np.floating) for interval in intervals]):
+        start_dtype = float
+    if any([np.issubdtype(type(interval[1]), np.floating) for interval in intervals]):
+        end_dtype = float
+    values = np.array(intervals, dtype=[('start', start_dtype), ('end', end_dtype)])
+    values.sort(axis=0, order=['start', 'end'])
+    merged = []
+    start, end = values[0]
+    for i in range(1, n_intervals):
+        if values[i][0] > end:
+            merged.append((start, end))
+            start = values[i][0]
+        end = values[i][1]
+        if i == n_intervals - 1:
+            merged.append((start, end))
+    return merged
+
 def intervals_weightedOverlap(intervals):
     '''
     Return non-overlapping set of regions whose weights are the sum of the weights of
