@@ -1734,3 +1734,218 @@ def multisearch_NCBIGene(terms, nProc=None, **kwargs):
         return {terms[i]: results[i].get() for i in range(len(terms))}
 
 # endregion --- NCBI
+
+# region ------ IDT
+
+IDT_URL = 'https://www.idtdna.com'
+
+def IDT_complexity_screen(seq, product_type='gblock'):
+    '''
+    Assess complexity of DNA sequence.
+
+    Args
+    - seq: str
+        DNA sequence
+    - product_type: str. default='gblock'
+        gblock, gene, or megamer
+
+    Returns: dict
+      Decoded JSON response. Keys:
+        ChosenIndices
+        Complexities
+        ComplexityScreenerResults
+        FullSequence
+        OptimizedSubseq
+        RestrictionSites
+        ComplexityColor
+        ComplexityDetail
+        ComplexityLimitReached
+        ComplexityScore
+        ComplexitySummary
+    '''
+    with requests.Session() as s:
+        # visit IDT
+        r_idt = s.get(IDT_URL)
+        if not r_idt.ok:
+            r_idt.raise_for_status()
+
+        url = 'https://www.idtdna.com/CodonOpt/Home/ValidateItem'
+        params = {'fullSeq': seq, 'subseq': seq, 'productType': product_type}
+        r = s.post(url, json=params)
+        if not r.ok:
+            r.raise_for_status()
+    return json.loads(r.text)
+
+def IDT_codon_opt(seqs, sequence_type, taxon_id, product_type='gblock', return_full=False):
+    '''
+    Submit sequences to IDT Codon Optimization Tool.
+    See https://www.idtdna.com/CodonOpt (requires login).
+
+    Args
+    - seqs: list of 2-tuple of str
+        Sequences to codon optimize given as [(name1, seq1), (name2, seq2), ...]
+    - sequence_type: str
+        aminoAcid or dna
+    - taxon_id: int or str
+        Taxon ID of target organism. See taxon_id argument of downloadBio.get_codon_usage().
+    - product_type: str. default='gblock'
+        gblock, gene, or megamer
+    - return_full: bool. default=False
+        Return full JSON response as dict.
+
+    Returns: pandas.DataFrame or dict
+      If `return_full`: dict representing decoded JSON results
+      Otherwise, a DataFrame:
+        name: name of input sequence
+        input: input sequence
+        output: optimized sequence
+        complexity: complexity score
+          < 7: Accepted - Low Complexity
+          < 10: Accepted - High Complexity
+    '''
+    with requests.Session() as s:
+        # visit IDT
+        r_idt = s.get(IDT_URL)
+        if not r_idt.ok:
+            r_idt.raise_for_status()
+
+        # login to IDT - account found via http://bugmenot.com/view/idtdna.com
+        url_login = 'https://www.idtdna.com/site/Account/Login/Gatekeeper'
+        data_login = {'UserName': 'ev376821', 'Password': 'evan1234', 'RememberMe': 'true'}
+        r_login = s.post(url_login, data=data_login)
+        if not r_login.ok:
+            r_login.raise_for_status()
+
+        # build request
+        url_copt = 'https://www.idtdna.com/CodonOpt/Home/Optimize'
+        data_copt = {
+            'tableString': get_codon_usage(taxon_id, output='str').replace('\n', '\r\n'),
+            'optimizationItems': [{
+                'ItemModalError': {
+                    'ShowModalMessage': 'false',
+                    'ModalMessageType': 'modal-message-danger',
+                    'ModalTitle': '',
+                    'ModalMessage': ''
+                },
+                'ReadingFrameStart': -1,
+                'ReadingFrameEnd': -1,
+                'OptimizedSequence': '',
+                'Id': idx,
+                'Name': name,
+                'OriginalSequence': seq,
+                'SequenceType': sequence_type,
+                'UpstreamSubseq': '',
+                'DownstreamSubseq': '',
+                'ValidatingItem': 'false',
+                'Complexities': [],
+                'RestrictionSiteWarning': '',
+                'ManualOptimizing': 'false',
+                'IsChecked': 'false',
+                'AminoAcidResults': [],
+                'OptSubseq': '',
+                'Text': '',
+                'NoComplexitiesDetected': 'false',
+                'ShowComplexities': 'false',
+                'ComplexitySummary': '',
+                'ComplexityDetail': '',
+                'ComplexityScore': 0,
+                'ComplexityLimitReached': 'false',
+                'ComplexityColor': ''
+            } for idx, (name, seq) in enumerate(seqs)],
+            'sequenceType': sequence_type,
+            'productType': product_type
+        }
+        r_copt = s.post(url_copt, json=data_copt)
+        if not r_copt.ok:
+            r_copt.raise_for_status()
+        results = json.loads(r_copt.text)
+        if return_full:
+            return results
+        return pd.DataFrame(
+            [(
+                result['Name'],
+                result['OriginalSequence'],
+                result['OptResult']['FullSequence'],
+                result['OptResult']['ComplexityScore'])
+                for result in results],
+            columns = ['name', 'input', 'output', 'complexity'])
+
+# endregion --- IDT
+
+# region ------ Miscellaneous
+
+def get_codon_usage(taxon_id, codon_code=1, output='table'):
+    '''
+    Retrieve codon usage from the Codon Usage Database hosted by the Kazusa DNA Research Institute.
+    See http://www.kazusa.or.jp/codon/.
+
+    Args
+    - taxon_id: int or str
+        Taxon ID of species. Append '.mitochondrion' to taxon ID for mitochondrion codon usage.
+    - codon_code: int. default=1
+        Codon translation code
+          0: Do not translate
+          1: Standard
+          2: Vertebrate Mitochondrial
+          3: Yeast Mitochondrial
+          4: Mold, Protozoan, Coelenterate Mitochondrial and Mycoplasma/Spiroplasma
+          5: Invertebrate Mitochondrial
+          6: Ciliate Macronuclear and Dasycladacean
+          9: Echinoderm Mitochondrial
+          10: Alternative Ciliate Macronuclear
+          11: Eubacterial
+          12: Alternative Yeast
+          13: Ascidian Mitochondrial
+          14: Flatworm Mitochondrial
+          15: Blepharisma Nuclear Code
+    - output: str. default='table'
+        table: pandas.DataFrame
+          triplet: str
+            Codon triplet
+          amino acid: str
+            [Only if codon_code > 0] Amino acid encoded by the codon triplet
+          fraction: float
+            [Only if codon_code > 0] For a given amino acid, the fraction coded with a particular codon triplet
+          frequency: float
+            Count per thousand over all CDSs of the organism.
+            Sum of all frequencies in the table should equal 1000.
+          number: int
+            Codon count over all CDSs of the organism
+        str: str
+          Raw codon usage string
+        html: str
+          Webpage HTML
+
+    Returns: pandas.DataFrame or str
+      See `output` argument.
+    '''
+    assert codon_code in (0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15)
+    assert output in ('table', 'str', 'html')
+
+    url = 'http://www.kazusa.or.jp/codon/cgi-bin/showcodon.cgi'
+    params = {'species': taxon_id}
+    if codon_code != 0:
+        params.update({'aa': codon_code, 'style': 'N'})
+    r = requests.get(url, params=params)
+    if not r.ok:
+        r.raise_for_status()
+
+    if output == 'html':
+        return r.text
+
+    # re.DOTALL flag necessary for the dot to match newlines
+    codon_usage_str = re.search(r'<pre>(.*)</pre>', r.text, re.DOTALL | re.IGNORECASE).groups()[0].strip()
+    if output == 'str':
+        return codon_usage_str
+
+    codon_usage_str = re.sub(pattern=r'\)\s+', repl=')\n', string=codon_usage_str)
+    codon_usage_str = re.sub(pattern=r'\(|\)', repl=' ', string=codon_usage_str)
+    codon_usage_str = re.sub(pattern=r'\n\s+', repl='\n', string=codon_usage_str)
+    if codon_code == 0:
+        columns = ('triplet', 'frequency', 'number')
+    else:
+        columns = ('triplet', 'amino acid', 'fraction', 'frequency', 'number')
+    df = pd.read_csv(io.StringIO(codon_usage_str), sep='\s+', header=None, names=columns)
+    return df
+
+# endregion --- Miscellaneous
