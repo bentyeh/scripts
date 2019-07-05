@@ -267,12 +267,15 @@ def pandas_apply_parallel(grouped, func, nproc=None, concat=True, **kwargs):
     Based on https://stackoverflow.com/a/29281494
     '''
     if nproc is None:
-        nproc = len(os.sched_getaffinity(0))
+        try:
+            nproc = len(os.sched_getaffinity(0))
+        except AttributeError:
+            nproc = os.cpu_count()
 
     with multiprocessing.Pool(nproc) as pool:
         # ret_list = pool.map(func, [group for name, group in grouped])
         result_list = []
-        for name, group in grouped:
+        for _, group in grouped:
             result_list.append(pool.apply_async(func, (group,), kwargs))
         pool.close()
         pool.join()

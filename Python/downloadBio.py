@@ -2,7 +2,7 @@
 import sys, os
 sys.path.append(os.path.dirname(__file__))
 
-import io, json, multiprocessing, re, time
+import collections, io, itertools, json, multiprocessing, re, time
 from collections.abc import Iterable
 
 import numpy as np
@@ -714,7 +714,7 @@ def parse_QuickGO_JSON(results):
 
     goAspect_map = {'cellular_component': 'C', 'biological_process': 'P', 'molecular_function': 'F'}
 
-    colNames_map = OrderedDict([
+    colNames_map = collections.OrderedDict([
         # entries in order by 'search' API method (see getQuickGO())
         ('geneProductDb', 'GENE PRODUCT DB'),
         ('geneProductId', 'GENE PRODUCT ID'),
@@ -742,8 +742,8 @@ def parse_QuickGO_JSON(results):
         if results[i]['withFrom'] is not None:
             for j in range(len(results[i]['withFrom'])):
                 for k in range(len(results[i]['withFrom'][j]['connectedXrefs'])):
-                    withFrom_list.append(':'.join([results[i]['withFrom'][j]['connectedXrefs'][0]['db'],
-                                                   results[i]['withFrom'][j]['connectedXrefs'][0]['id']]))
+                    withFrom_list.append(':'.join([results[i]['withFrom'][j]['connectedXrefs'][k]['db'],
+                                                   results[i]['withFrom'][j]['connectedXrefs'][k]['id']]))
         results[i]['withFrom'] = '|'.join(withFrom_list)
 
         # extract 'geneProductId' into 'GENE PRODUCT DB' and 'GENE PRODUCT ID'
@@ -762,7 +762,7 @@ def parse_QuickGO_JSON(results):
     return df
 
 def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse=True,
-                            attempts=5, sleep=0.5, nProc=1, **kwargs):
+                            attempts=5, sleep=0.5, nproc=1, **kwargs):
     '''
     Download annotations from QuickGO. See https://www.ebi.ac.uk/QuickGO/api/index.html.
 
@@ -792,8 +792,8 @@ def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse
         Number of attempts to retry a request upon error
     - sleep: float. default=0.5
         Seconds to sleep for in between each attempt
-    - nProc: int. default=1
-        Number of processes to use. Error handling is not implemented if nProc > 1.
+    - nproc: int. default=1
+        Number of processes to use. Error handling is not implemented if nproc > 1.
     - **kwargs
         Additional parameters to pass to send in the body of the HTTP request
 
@@ -809,7 +809,7 @@ def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse
 
     # validate arguments
     assert(type(attempts) is int and attempts > 0)
-    assert(not(nProc > 1 and method == 'download'))
+    assert(not(nproc > 1 and method == 'download'))
     assert(method in ['search', 'download', 'opt'])
 
     if method in ['search', 'opt']:
@@ -860,8 +860,8 @@ def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse
             return get_QuickGO_annotations(goIds, useDefaults, 'download', parseResponse, **kwargs)
 
         params['page'] += 1
-        if nProc > 1:
-            allResponses.extend(_get_QuickGO_mt(url, params, headers, attempts, sleep, nProc,
+        if nproc > 1:
+            allResponses.extend(_get_QuickGO_mt(url, params, headers, attempts, sleep, nproc,
                                                 pages=range(params['page'],totalPages+1)))
         else:
             while True:
@@ -876,7 +876,7 @@ def get_QuickGO_annotations(goIds, useDefaults=True, method='opt', parseResponse
 
     if parseResponse:
         results = list(itertools.chain.from_iterable([r.json()['results'] for r in allResponses]))
-        return parseQuickGOJSON(results)
+        return parse_QuickGO_JSON(results)
     else:
         return allResponses
 
@@ -907,14 +907,14 @@ def _get_QuickGO_helper(url, params, headers, method, attempts=5, sleep=0.5):
 
     return (r, attempts)
 
-def _get_QuickGO_mt(url, params, headers, attempts, sleep, nProc, pages):
+def _get_QuickGO_mt(url, params, headers, attempts, sleep, nproc, pages):
     '''
     Multiprocess implementation of getQuickGO(method='search') without error handling
     '''
 
-    with multiprocessing.Pool(nProc) as pool:
+    with multiprocessing.Pool(nproc) as pool:
         print("Using {:d} processes...".format(pool._processes))
-        sleep = max(sleep, 0.1*nProc)
+        sleep = max(sleep, 0.1*nproc)
 
         allResponses = []
         for i in pages:
@@ -1458,161 +1458,161 @@ def blastAndParse(blast_fun=my_qblast, save=None, parse=None, parse_type=None, p
             print(f'Parsing of format_type {parse_type} is not supported.', file=log)
     return result
 
-def blastp_post(**kwargs):
-    '''
-    Submit query to NCBI BLAST server using a POST request.
+# def blastp_post(**kwargs):
+#     '''
+#     Submit query to NCBI BLAST server using a POST request.
 
-    A POST request is what the web form (https://blast.ncbi.nlm.nih.gov/Blast.cgi) submits.
-    An alternative is to use PUT-based requests, as implemented by Bio.Blast.NCBIWWW.qblast()
-    in the BioPython package.
+#     A POST request is what the web form (https://blast.ncbi.nlm.nih.gov/Blast.cgi) submits.
+#     An alternative is to use PUT-based requests, as implemented by Bio.Blast.NCBIWWW.qblast()
+#     in the BioPython package.
 
-    References
-    - https://blast.ncbi.nlm.nih.gov/Blast.cgi?CMD=Web&PAGE_TYPE=BlastDocs&DOC_TYPE=BlastHelp
-        Web form documentation
+#     References
+#     - https://blast.ncbi.nlm.nih.gov/Blast.cgi?CMD=Web&PAGE_TYPE=BlastDocs&DOC_TYPE=BlastHelp
+#         Web form documentation
 
-    General
-    - QUERY: FASTA, bare sequence, or newline-delimited identifiers
-    - db: nucleotide (blastn, tblastn), protein (blastp, blastx)
-    - QUERY_FROM: Specify segment of the query sequence to BLAST
-    - QUERY_TO: Specify segment of the query sequence to BLAST
-    - QUERYFILE: Path to FASTA file
-    - JOB_TITLE: Title of BLAST search
-    - SUBJECTS: FASTA, bare sequence, or newline-delimited identifiers
-    - stype: nucleotide (blastn, tblastn), protein (blastp, blastx)
-    - SUBJECTS_FROM: Specify segment of the subject sequence to BLAST
-    - SUBJECTS_TO: Specify segment of the subject sequence to BLAST
-    - SUBJECTFILE: Path to FASTA file
-    - EQ_MENU: Restrict search to specified organisms. Ex: 'Fungi (taxid:4751)'
-    - ORG_EXCLUDE: Set to 'on' to exclude the organisms specified in EQ_MENU
+#     General
+#     - QUERY: FASTA, bare sequence, or newline-delimited identifiers
+#     - db: nucleotide (blastn, tblastn), protein (blastp, blastx)
+#     - QUERY_FROM: Specify segment of the query sequence to BLAST
+#     - QUERY_TO: Specify segment of the query sequence to BLAST
+#     - QUERYFILE: Path to FASTA file
+#     - JOB_TITLE: Title of BLAST search
+#     - SUBJECTS: FASTA, bare sequence, or newline-delimited identifiers
+#     - stype: nucleotide (blastn, tblastn), protein (blastp, blastx)
+#     - SUBJECTS_FROM: Specify segment of the subject sequence to BLAST
+#     - SUBJECTS_TO: Specify segment of the subject sequence to BLAST
+#     - SUBJECTFILE: Path to FASTA file
+#     - EQ_MENU: Restrict search to specified organisms. Ex: 'Fungi (taxid:4751)'
+#     - ORG_EXCLUDE: Set to 'on' to exclude the organisms specified in EQ_MENU
 
-    blastp
-    - DATABASE: default=nr
-        nr (Non-redundant protein sequences), refseq_protein (RefSeq), landmark (Model Organisms),
-        swissprot (Swiss-Prot), pataa (Patented protein sequences), pdb (Protein Data Bank),
-        env_nr (Metagenomic proteins), or tsa_nr (Transcriptome Shotgun Assembly proteins)
-    - BLAST_PROGRAMS: default='blastp'
-        kmerBlastp (Quick BLASTP), blastp, psiBlast (PSI-BLAST), phiBlast (PHI-BLAST), or
-        deltaBlast (DELTA-BLAST)
-    - MAX_NUM_SEQ: default=[blastp, kmerBlastp] 100; [psiBlast, phiBlast, deltaBlast] 500
-        Maximum number of aligned sequences to display (web interface ranges from 100 to 20000)
-    - SHORT_QUERY_ADJUST: default='on'
-        Automatically adjust parameters for short input sequences
-    - EXPECT: E-value threshold. default=10
-    - WORD_SIZE: default=[blastp, kmerBlastp] 6; [psiBlast, phiBlast, deltaBlast] 3
-        Length of the seed that initiates an alignment.
-    - HSP_RANGE_MAX: default=0
-        Limit the number of matches to a query range.
-    - MATRIX_NAME: default=BLOSUM62
-        PAM30, PAM70, PAM250, BLOSUM80, BLOSUM62, BLOSUM45, BLOSUM50, or BLOSUM90
-    - GAPCOSTS: default='11 1'
-        Cost to create and extend a gap in an alignment.
-    - COMPOSITION_BASED_STATISTICS: default=2
-        Matrix adjustment method to compensate for amino acid composition of sequences.
-        0 (No adjustment), 1 (Composition-based statistics), 2 (Conditional compositional
-        score matrix adjustment), 3 (Universal compositional score matrix adjustment)
+#     blastp
+#     - DATABASE: default=nr
+#         nr (Non-redundant protein sequences), refseq_protein (RefSeq), landmark (Model Organisms),
+#         swissprot (Swiss-Prot), pataa (Patented protein sequences), pdb (Protein Data Bank),
+#         env_nr (Metagenomic proteins), or tsa_nr (Transcriptome Shotgun Assembly proteins)
+#     - BLAST_PROGRAMS: default='blastp'
+#         kmerBlastp (Quick BLASTP), blastp, psiBlast (PSI-BLAST), phiBlast (PHI-BLAST), or
+#         deltaBlast (DELTA-BLAST)
+#     - MAX_NUM_SEQ: default=[blastp, kmerBlastp] 100; [psiBlast, phiBlast, deltaBlast] 500
+#         Maximum number of aligned sequences to display (web interface ranges from 100 to 20000)
+#     - SHORT_QUERY_ADJUST: default='on'
+#         Automatically adjust parameters for short input sequences
+#     - EXPECT: E-value threshold. default=10
+#     - WORD_SIZE: default=[blastp, kmerBlastp] 6; [psiBlast, phiBlast, deltaBlast] 3
+#         Length of the seed that initiates an alignment.
+#     - HSP_RANGE_MAX: default=0
+#         Limit the number of matches to a query range.
+#     - MATRIX_NAME: default=BLOSUM62
+#         PAM30, PAM70, PAM250, BLOSUM80, BLOSUM62, BLOSUM45, BLOSUM50, or BLOSUM90
+#     - GAPCOSTS: default='11 1'
+#         Cost to create and extend a gap in an alignment.
+#     - COMPOSITION_BASED_STATISTICS: default=2
+#         Matrix adjustment method to compensate for amino acid composition of sequences.
+#         0 (No adjustment), 1 (Composition-based statistics), 2 (Conditional compositional
+#         score matrix adjustment), 3 (Universal compositional score matrix adjustment)
 
-    Unset
-    - PHI_PATTERN: [phiBlast only] PHI pattern to start the search
-    - PSSM: [psiBlast, phiBlast only] Path to PSSM file
-    - I_THRESH: [psiBlast, phiBlast, deltaBlast only] default=0.005
-        Statistical significance threshold to include a sequence in the model used by PSI-BLAST to create
-        the PSSM on the next iteration. 
-    - DI_THRESH: [deltaBlast only] default=0.05
-        Statistical significance threshold to include a domain in the model used by DELTA-BLAST to create the PSSM 
-    - PSI_PSEUDOCOUNT: [psiBlast, phiBlast, deltaBlast only] default=0
-        Pseduocount parameter. If zero is specified, then the parameter is automatically determined through
-        a minimum length description principle (PMID 19088134). A value of 30 is suggested in order to obtain
-        the approximate behavior before the minimum length principle was implemented.
-    - FILTER: include this argument once for each filter to set
-        L (low complexity regions), M (mask for lookup table only)
-    - LCASE_MASK: set to 'on' to enable mask
-        Mask any letters that were lower-case in the FASTA input.
+#     Unset
+#     - PHI_PATTERN: [phiBlast only] PHI pattern to start the search
+#     - PSSM: [psiBlast, phiBlast only] Path to PSSM file
+#     - I_THRESH: [psiBlast, phiBlast, deltaBlast only] default=0.005
+#         Statistical significance threshold to include a sequence in the model used by PSI-BLAST to create
+#         the PSSM on the next iteration. 
+#     - DI_THRESH: [deltaBlast only] default=0.05
+#         Statistical significance threshold to include a domain in the model used by DELTA-BLAST to create the PSSM 
+#     - PSI_PSEUDOCOUNT: [psiBlast, phiBlast, deltaBlast only] default=0
+#         Pseduocount parameter. If zero is specified, then the parameter is automatically determined through
+#         a minimum length description principle (PMID 19088134). A value of 30 is suggested in order to obtain
+#         the approximate behavior before the minimum length principle was implemented.
+#     - FILTER: include this argument once for each filter to set
+#         L (low complexity regions), M (mask for lookup table only)
+#     - LCASE_MASK: set to 'on' to enable mask
+#         Mask any letters that were lower-case in the FASTA input.
 
-    Hidden fields for default formatting parameters
-    - SHOW_OVERVIEW: on
-    - SHOW_LINKOUT: on
-    - GET_SEQUENCE: on
-    - FORMAT_OBJECT: Alignment
-    - FORMAT_TYPE: HTML
-    - ALIGNMENT_VIEW: Pairwise
-    - MASK_CHAR: 2
-    - MASK_COLOR: 1
-    - DESCRIPTIONS: 100
-    - ALIGNMENTS: 100
-    - LINE_LENGTH: 60
-    - NEW_VIEW: on
-    - OLD_VIEW: false
-    - NCBI_GI: ''
-    - SHOW_CDS_FEATURE: ''
-    - NUM_OVERVIEW: 100
-    - FORMAT_EQ_TEXT: ''
-    - FORMAT_ORGANISM: ''
-    - EXPECT_LOW: ''
-    - EXPECT_HIGH: ''
-    - PERC_IDENT_LOW: ''
-    - PERC_IDENT_HIGH: ''
-    - QUERY_INDEX: 0
-    - FORMAT_NUM_ORG: 1
-    - CONFIG_DESCR: 2,3,4,5,6,7,8
+#     Hidden fields for default formatting parameters
+#     - SHOW_OVERVIEW: on
+#     - SHOW_LINKOUT: on
+#     - GET_SEQUENCE: on
+#     - FORMAT_OBJECT: Alignment
+#     - FORMAT_TYPE: HTML
+#     - ALIGNMENT_VIEW: Pairwise
+#     - MASK_CHAR: 2
+#     - MASK_COLOR: 1
+#     - DESCRIPTIONS: 100
+#     - ALIGNMENTS: 100
+#     - LINE_LENGTH: 60
+#     - NEW_VIEW: on
+#     - OLD_VIEW: false
+#     - NCBI_GI: ''
+#     - SHOW_CDS_FEATURE: ''
+#     - NUM_OVERVIEW: 100
+#     - FORMAT_EQ_TEXT: ''
+#     - FORMAT_ORGANISM: ''
+#     - EXPECT_LOW: ''
+#     - EXPECT_HIGH: ''
+#     - PERC_IDENT_LOW: ''
+#     - PERC_IDENT_HIGH: ''
+#     - QUERY_INDEX: 0
+#     - FORMAT_NUM_ORG: 1
+#     - CONFIG_DESCR: 2,3,4,5,6,7,8
 
-    Hidden fields
-    - CLIENT: web
-    - SERVICE: [blastp, kmerBlastp, psiBlast, phiBlast] plain; [deltaBlast] delta_blast
-    - CMD: request
-    - PAGE: Proteins
-    - PROGRAM: blastp
-    - MEGABLAST: ''
-    - RUN_PSIBLAST: [blastp, kmerBlastp] ''; [psiBlast, phiBlast, deltaBlast] on
-    - WWW_BLAST_TYPE: ''
-    - CDD_SEARCH: on
-    - ID_FOR_PSSM: ''
-    - DB_DISPLAY_NAME: same as DATABASE
-    - ORG_DBS: ''
-    - SAVED_PSSM: ''
-    - SELECTED_PROG_TYPE: same as DATABASE
-    - SAVED_SEARCH: ''
-    - BLAST_SPEC: ''
-    - MIXED_DATABASE: ''
-    - QUERY_BELIEVE_DEFLINE: ''
-    - DB_DIR_PREFIX: ''
-    - USER_DATABASE: ''
-    - USER_WORD_SIZE: ''
-    - USER_MATCH_SCORES: ''
-    - USER_FORMAT_DEFAULTS: ''
-    - NO_COMMON: ''
-    - NUM_DIFFS: 
-    - NUM_OPTS_DIFFS
-    - UNIQ_DEFAULTS_NAME
-    - PAGE_TYPE: BlastSearch
-    '''
+#     Hidden fields
+#     - CLIENT: web
+#     - SERVICE: [blastp, kmerBlastp, psiBlast, phiBlast] plain; [deltaBlast] delta_blast
+#     - CMD: request
+#     - PAGE: Proteins
+#     - PROGRAM: blastp
+#     - MEGABLAST: ''
+#     - RUN_PSIBLAST: [blastp, kmerBlastp] ''; [psiBlast, phiBlast, deltaBlast] on
+#     - WWW_BLAST_TYPE: ''
+#     - CDD_SEARCH: on
+#     - ID_FOR_PSSM: ''
+#     - DB_DISPLAY_NAME: same as DATABASE
+#     - ORG_DBS: ''
+#     - SAVED_PSSM: ''
+#     - SELECTED_PROG_TYPE: same as DATABASE
+#     - SAVED_SEARCH: ''
+#     - BLAST_SPEC: ''
+#     - MIXED_DATABASE: ''
+#     - QUERY_BELIEVE_DEFLINE: ''
+#     - DB_DIR_PREFIX: ''
+#     - USER_DATABASE: ''
+#     - USER_WORD_SIZE: ''
+#     - USER_MATCH_SCORES: ''
+#     - USER_FORMAT_DEFAULTS: ''
+#     - NO_COMMON: ''
+#     - NUM_DIFFS: 
+#     - NUM_OPTS_DIFFS
+#     - UNIQ_DEFAULTS_NAME
+#     - PAGE_TYPE: BlastSearch
+#     '''
 
-    default_kwargs = {
-        'DATABASE': 'nr',
-        'db': 'protein',
-        'BLAST_PROGRAMS': 'blastp',
-        'MAX_NUM_SEQ': 100,
-        'WORD_SIZE': 3,
-        'SHORT_QUERY_ADJUST': 'on',
-        'EXPECT': 10,
-        'HSP_RANGE_MAX': 0,
-        'MATRIX_NAME': 'BLOSUM62',
-        'GAPCOSTS': '11 1',
-        'COMPOSITION_BASED_STATISTICS': 2
-    }
+#     default_kwargs = {
+#         'DATABASE': 'nr',
+#         'db': 'protein',
+#         'BLAST_PROGRAMS': 'blastp',
+#         'MAX_NUM_SEQ': 100,
+#         'WORD_SIZE': 3,
+#         'SHORT_QUERY_ADJUST': 'on',
+#         'EXPECT': 10,
+#         'HSP_RANGE_MAX': 0,
+#         'MATRIX_NAME': 'BLOSUM62',
+#         'GAPCOSTS': '11 1',
+#         'COMPOSITION_BASED_STATISTICS': 2
+#     }
 
-    if 'BLAST_PROGRAMS' in kwargs and kwargs['BLAST_PROGRAMS'] in ['psiBlast', 'phiBlast', 'deltaBlast']:
-        default_kwargs['MAX_NUM_SEQ'] = 500
-        default_kwargs['WORD_SIZE'] = 3
+#     if 'BLAST_PROGRAMS' in kwargs and kwargs['BLAST_PROGRAMS'] in ['psiBlast', 'phiBlast', 'deltaBlast']:
+#         default_kwargs['MAX_NUM_SEQ'] = 500
+#         default_kwargs['WORD_SIZE'] = 3
 
-    FILE_ARGS = ['QUERYFILE', 'SUBJECTFILE', 'PSSM']
-    for key in kwargs:
-        if key in FILE_ARGS:
-            kwargs[key] = (kwargs[key], open(kwargs[key], 'rb'), 'application/octet-stream')
-        else:
-            kwargs[key] = (None, kwargs[key])
+#     FILE_ARGS = ['QUERYFILE', 'SUBJECTFILE', 'PSSM']
+#     for key in kwargs:
+#         if key in FILE_ARGS:
+#             kwargs[key] = (kwargs[key], open(kwargs[key], 'rb'), 'application/octet-stream')
+#         else:
+#             kwargs[key] = (None, kwargs[key])
 
-    r = requests.post(url=Bio.Blast.NCBIWWW.NCBI_BLAST_URL, files=data, allow_redirects=False)
-    return r
+#     r = requests.post(url=Bio.Blast.NCBIWWW.NCBI_BLAST_URL, files=data, allow_redirects=False)
+#     return r
 
 def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=True, verbose=True, **kwargs):
     '''
@@ -1703,7 +1703,7 @@ def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=T
             print(f'{term} failed to match any name or alias, returning the single unique result provided by Entrez.')
     return matches
 
-def multisearch_NCBIGene(terms, nProc=None, **kwargs):
+def multisearch_NCBIGene(terms, nproc=None, **kwargs):
     '''
     Search official human gene names and aliases in NCBI Gene database for terms.
 
@@ -1712,23 +1712,22 @@ def multisearch_NCBIGene(terms, nProc=None, **kwargs):
         Terms to lookup
     - email: str
         email registered with NCBI
-    - nProc: int. default=None
+    - nproc: int. default=None
         Number of processes to use. If None, uses as many processes as available CPUs.
 
     Returns: dict: str -> dict: int -> dict: str -> str or list of str
       {<term>: <NCBI Gene ID>: {'symbol': <gene symbol>, 'name': <gene name>, 'aliases': [aliases]}}
     '''
 
-    if nProc is None:
+    if nproc is None:
         try:
-            nProc = len(os.sched_getaffinity(0))
+            nproc = len(os.sched_getaffinity(0))
         except AttributeError:
-            warnings.warn('Unable to get accurate number of available CPUs. Assuming all CPUs are available.')
-            nProc = os.cpu_count()
-    assert isinstance(nProc, int) and nProc > 0
+            nproc = os.cpu_count()
+    assert isinstance(nproc, int) and nproc > 0
 
     results = []
-    with Pool(processes=nProc) as pool:
+    with multiprocessing.Pool(processes=nproc) as pool:
         for i in range(len(terms)):
             results.append(pool.apply_async(search_NCBIGene, (terms[i],), kwargs))
         return {terms[i]: results[i].get() for i in range(len(terms))}
