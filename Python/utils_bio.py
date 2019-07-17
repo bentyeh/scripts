@@ -2,13 +2,35 @@
 import sys, os
 sys.path.append(os.path.dirname(__file__))
 
-import io, re
+import copy, io, re
 
+import numpy as np
 import pandas as pd
 
 import utils_files, utils
 
 # region ------ General bioinformatics tools
+
+# Source: https://pythonforbiologists.com/dictionaries
+# Codons are sorted alphabetically with respect to each amino acid
+STANDARD_CODON_TABLE = {
+    'ATA':'I', 'ATC':'I', 'ATT':'I', 'ATG':'M',
+    'ACA':'T', 'ACC':'T', 'ACG':'T', 'ACT':'T',
+    'AAC':'N', 'AAT':'N', 'AAA':'K', 'AAG':'K',
+    'AGC':'S', 'AGT':'S', 'AGA':'R', 'AGG':'R',
+    'CTA':'L', 'CTC':'L', 'CTG':'L', 'CTT':'L',
+    'CCA':'P', 'CCC':'P', 'CCG':'P', 'CCT':'P',
+    'CAC':'H', 'CAT':'H', 'CAA':'Q', 'CAG':'Q',
+    'CGA':'R', 'CGC':'R', 'CGG':'R', 'CGT':'R',
+    'GTA':'V', 'GTC':'V', 'GTG':'V', 'GTT':'V',
+    'GCA':'A', 'GCC':'A', 'GCG':'A', 'GCT':'A',
+    'GAC':'D', 'GAT':'D', 'GAA':'E', 'GAG':'E',
+    'GGA':'G', 'GGC':'G', 'GGG':'G', 'GGT':'G',
+    'TCA':'S', 'TCC':'S', 'TCG':'S', 'TCT':'S',
+    'TTC':'F', 'TTT':'F', 'TTA':'L', 'TTG':'L',
+    'TAC':'Y', 'TAT':'Y', 'TAA':'*', 'TAG':'*',
+    'TGC':'C', 'TGT':'C', 'TGA':'*', 'TGG':'W'
+}
 
 def rcindex(index, length):
     '''
@@ -17,6 +39,52 @@ def rcindex(index, length):
     Example: str(Bio.Seq.Seq(seq[index]).complement()) == seq.reverse_complement()[RCIndex(index, len(seq))]
     '''
     return length - index - 1
+
+def reverse_translate(seq, codon_table=None, mode='best_codon'):
+    '''
+    Reverse translate amino acid sequence to DNA/RNA using a codon table.
+
+    Args
+    - seq: str
+        Amino acid sequence to reverse translate
+    - codon_table: dict (str -> dict (str -> float)). default=None
+        Codon table mapping amino acid to dictionary of codon frequencies.
+        Structure: {amino_acid: {codon1: freq1, codon2: freq2, ...}, ...}
+        If None, uses STANDARD_CODON_TABLE with evenly distributed frequencies.
+    - mode: str. default='best_codon'
+        'best_codon': Always choose the most frequent codon. If multiple codons have
+          the same frequency, the first codon in the dictionary is chosen.
+        'harmonized': Sample codons based on their frequency in the codon table.
+
+    Returns: str
+      Reverse-translated sequence.
+    '''
+    assert mode in ('best_codon', 'harmonized')
+
+    if codon_table is None:
+        codon_table = {}
+        if mode == 'best_codon':
+            for codon, aa in STANDARD_CODON_TABLE.items():
+                codon_table.setdefault(aa, codon)
+        else:
+            for codon, aa in STANDARD_CODON_TABLE.items():
+                if aa in codon_table:
+                    codon_table[aa].update({codon: 1})
+                else:
+                    codon_table[aa] = {codon: 1}
+            for aa, freqs in codon_table.items():
+                s = 1/sum(freqs.values())
+                codon_table[aa] = {codon: s*freq for codon, freq in freqs.items()}
+    assert len(set([type(codon_table[aa]) for aa in codon_table])) == 1
+
+    if mode == 'best_codon':
+        if not isinstance(codon_table[list(codon_table.keys())[0]], str):
+            codon_table = copy.deepcopy(codon_table)
+            for aa, freqs in codon_table.items():
+                codon_table[aa] = max(list(codon_table[aa].keys()), key=lambda codon: codon_table[aa][codon])
+        return ''.join([codon_table[aa] for aa in seq])
+
+    return ''.join([np.random.choice(list(codon_table[aa].keys()), p=list(codon_table[aa].values())) for aa in seq])
 
 # endregion --- General bioinformatics tools
 
@@ -371,8 +439,8 @@ def dfToFasta(df, file=None, name_col='name', seq_col='seq', header_prefix='>'):
     Args
     - df: pandas.DataFrame
         Table of names and sequences
-    - file: str. default=None
-        Path to save FASTA file
+    - file: str or io.IOBase. default=None
+        Path to save FASTA file, or file object.
     - name_col: str. default='name'
         Column to use as FASTA header
     - seq_col: str. default='seq'
@@ -541,7 +609,7 @@ def blastToDf(records):
 
     Reference
     - See https://www.ncbi.nlm.nih.gov/dtd/NCBI_BlastOutput.mod.dtd for XML DTD schema
-    
+
     TODO: add support for iterator of Bio.SearchIO._model.query.QueryResult
     '''
     hsps = [] # high-scoring pairs
