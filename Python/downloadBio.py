@@ -1802,6 +1802,8 @@ def IDT_codon_opt(seqs, sequence_type, taxon_id, product_type='gblock', return_f
           < 7: Accepted - Low Complexity
           < 10: Accepted - High Complexity
     '''
+    assert sequence_type in ('aminoAcid', 'dna')
+
     with requests.Session() as s:
         # visit IDT
         r_idt = s.get(IDT_URL)
@@ -1817,6 +1819,10 @@ def IDT_codon_opt(seqs, sequence_type, taxon_id, product_type='gblock', return_f
 
         # build request
         url_copt = 'https://www.idtdna.com/CodonOpt/Home/Optimize'
+        headers_copt = {
+            'origin': 'https://www.idtdna.com',
+            'referer': 'https://www.idtdna.com/CodonOpt',
+        }
         data_copt = {
             'tableString': get_codon_usage(taxon_id, output='str').replace('\n', '\r\n'),
             'optimizationItems': [{
@@ -1831,7 +1837,7 @@ def IDT_codon_opt(seqs, sequence_type, taxon_id, product_type='gblock', return_f
                 'OptimizedSequence': '',
                 'Id': idx,
                 'Name': name,
-                'OriginalSequence': seq,
+                'OriginalSequence': seq.upper(),
                 'SequenceType': sequence_type,
                 'UpstreamSubseq': '',
                 'DownstreamSubseq': '',
@@ -1854,7 +1860,7 @@ def IDT_codon_opt(seqs, sequence_type, taxon_id, product_type='gblock', return_f
             'sequenceType': sequence_type,
             'productType': product_type
         }
-        r_copt = s.post(url_copt, json=data_copt)
+        r_copt = s.post(url_copt, json=data_copt, headers=headers_copt)
         if not r_copt.ok:
             r_copt.raise_for_status()
         results = json.loads(r_copt.text)
@@ -1910,6 +1916,10 @@ def get_codon_usage(taxon_id, codon_code=1, output='table'):
             Sum of all frequencies in the table should equal 1000.
           number: int
             Codon count over all CDSs of the organism
+        dict: dict (str -> dict (str -> float))
+          Codon table mapping amino acid to dictionary of codon frequencies, such as returned by
+          python_codon_tables.get_codons_table().
+          Structure: {amino_acid: {codon1: freq1, codon2: freq2, ...}, ...}
         str: str
           Raw codon usage string
         html: str
@@ -1919,7 +1929,7 @@ def get_codon_usage(taxon_id, codon_code=1, output='table'):
       See `output` argument.
     '''
     assert codon_code in (0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15)
-    assert output in ('table', 'str', 'html')
+    assert output in ('dict', 'html', 'str', 'table')
 
     url = 'http://www.kazusa.or.jp/codon/cgi-bin/showcodon.cgi'
     params = {'species': taxon_id}
@@ -1945,6 +1955,35 @@ def get_codon_usage(taxon_id, codon_code=1, output='table'):
     else:
         columns = ('triplet', 'amino acid', 'fraction', 'frequency', 'number')
     df = pd.read_csv(io.StringIO(codon_usage_str), sep='\s+', header=None, names=columns)
-    return df
+    if output == 'table':
+        return df
+    else: # output == 'dict'
+        return convert_codon_usage_format(df, 'dict')
+
+def convert_codon_usage_format(d, to):
+    '''
+    Convert codon table from pandas.DataFrame to dict.
+
+    Args: see 'output' argument of get_codon_usage()
+    - d: pandas.DataFrame or dict
+    - to: str
+        'table' or 'dict'
+
+    Returns: see 'output' argument of get_codon_usage()
+    '''
+    if to == 'table':
+        assert isinstance(d, dict)
+        return pd.DataFrame(d).reset_index().rename(columns={'index': 'triplet'}) \
+                              .melt(id_vars='triplet', var_name='amino acid', value_name='fraction') \
+                              .dropna().sort_values(['amino acid', 'triplet']).reset_index(drop=True)
+    elif to == 'dict':
+        assert isinstance(d, pd.DataFrame)
+        codon_usages = d.groupby('amino acid') \
+          .apply(lambda group: group.pivot_table(index='amino acid', columns='triplet', values='fraction') \
+                                    .to_dict('index')) \
+          .tolist()
+        return {aa: freqs for d in codon_usages for aa, freqs in d.items()}
+    else:
+        raise ValueError('"to" must be either "table" or "dict".')
 
 # endregion --- Miscellaneous
