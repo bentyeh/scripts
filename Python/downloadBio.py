@@ -1879,7 +1879,7 @@ def IDT_codon_opt(seqs, sequence_type, taxon_id, product_type='gblock', return_f
 
 # region ------ Miscellaneous
 
-def get_codon_usage(taxon_id, codon_code=1, output='table'):
+def get_codon_usage(taxon_id, codon_code=1, output='table', recalculate=False, dna=False):
     '''
     Retrieve codon usage from the Codon Usage Database hosted by the Kazusa DNA Research Institute.
     See http://www.kazusa.or.jp/codon/.
@@ -1924,12 +1924,18 @@ def get_codon_usage(taxon_id, codon_code=1, output='table'):
           Raw codon usage string
         html: str
           Webpage HTML
+    - recalcuate: bool. default=False
+        Recalculate frequency and fraction (if codon_code > 0) based on number
+    - dna: bool. default=False
+        Convert RNA codons to DNA (replace 'U' with 'T' in all codons)
 
     Returns: pandas.DataFrame or str
       See `output` argument.
     '''
     assert codon_code in (0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15)
     assert output in ('dict', 'html', 'str', 'table')
+    if dna and output in ('str', 'html'):
+        print(f'Conversion of codons to DNA not supported for \'{output}\' output format.', file=sys.stdout)
 
     url = 'http://www.kazusa.or.jp/codon/cgi-bin/showcodon.cgi'
     params = {'species': taxon_id}
@@ -1955,6 +1961,12 @@ def get_codon_usage(taxon_id, codon_code=1, output='table'):
     else:
         columns = ('triplet', 'amino acid', 'fraction', 'frequency', 'number')
     df = pd.read_csv(io.StringIO(codon_usage_str), sep='\s+', header=None, names=columns)
+    if recalculate:
+        df['frequency'] = df['number'] / (df['number'].sum() / 1000)
+        if 'fraction' in df.columns:
+            df['fraction'] = df['number'] / df.groupby('amino acid')['number'].transform('sum')
+    if dna:
+        df['triplet'] = df['triplet'].str.replace('U', 'T')
     if output == 'table':
         return df
     else: # output == 'dict'
