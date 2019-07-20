@@ -40,7 +40,7 @@ def rcindex(index, length):
     '''
     return length - index - 1
 
-def reverse_translate(seq, codon_table=None, mode='best_codon'):
+def reverse_translate(seq, codon_table=None, mode='best_codon', seed=''):
     '''
     Reverse translate amino acid sequence to DNA/RNA using a codon table.
 
@@ -55,10 +55,15 @@ def reverse_translate(seq, codon_table=None, mode='best_codon'):
         'best_codon': Always choose the most frequent codon. If multiple codons have
           the same frequency, the first codon in the dictionary is chosen.
         'harmonized': Sample codons based on their frequency in the codon table.
+    - seed: int or 1-d array_like. default=''
+        If of type str, ignored. Otherwise, passed to numpy.random.seed without type checking.
+        Seed is set at the start of this function.
 
     Returns: str
       Reverse-translated sequence.
     '''
+    if not isinstance(seed, str):
+        np.random.seed(seed)
     assert mode in ('best_codon', 'harmonized')
 
     if codon_table is None:
