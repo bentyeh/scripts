@@ -528,7 +528,7 @@ def get_Proteins(service='/proteins', entry=None, export='json', verbose=False, 
         r.raise_for_status()
     return r.text
 
-def get_Proteins_taxa(uniprot_acs, rank=None, cache=None, **kwargs):
+def get_Proteins_taxa(uniprot_acs, rank=None, cache=None, verbose=True, **kwargs):
     '''
     Lookup parent taxa of a protein at a given rank.
 
@@ -548,8 +548,9 @@ def get_Proteins_taxa(uniprot_acs, rank=None, cache=None, **kwargs):
       [If rank is not None] Map of taxa id of input proteins to parent taxa id at given rank.
     '''
     max_query_size = 100
+    uniprot_acs = list(set(uniprot_acs)) # remove duplicates
     taxa = {}
-    for i in range(int(np.ceil(len(uniprot_acs)/max_query_size))):
+    for i in tqdm(range(int(np.ceil(len(uniprot_acs)/max_query_size))), disable=not verbose):
         proteins = uniprot_acs[i*max_query_size:(i+1)*max_query_size]
         results = get_Proteins(service='/proteins', entry=None, export='json', accession=','.join(proteins))
         results = json.loads(results)
@@ -580,7 +581,7 @@ def get_taxon_at_rank(taxa, rank, check_self=True, nproc=1, verbose=True):
     - nproc: int. default=1
         Number of processes to use. The EMBL server appears fairly robust to >10 simultaneous requests.
     - verbose: bool. default=True
-        Show progress.
+        Show progress bar.
 
     Returns: dict of int -> int
       Map input taxa to parent taxa at a given rank. If no parent taxa at given
@@ -588,30 +589,46 @@ def get_taxon_at_rank(taxa, rank, check_self=True, nproc=1, verbose=True):
       the value of such input taxa will be None.
     '''
     d = {taxon: None for taxon in taxa}
-    range_wrap = tqdm if verbose else lambda x: x
+    taxa = list(set(taxa)) # remove duplicates
 
-    max_query_size = 50
+    if verbose:
+        callback = lambda *x: pbar.update()
+    else:
+        callback = None
+
     if check_self:
-        if verbose:
-            print('Checking if input taxa are already at desired rank ...')
-        for i in range_wrap(range(int(np.ceil(len(taxa)/max_query_size)))):
-            query = ','.join([str(i) for i in taxa[i*max_query_size:(i+1)*max_query_size]])
-            results = get_Proteins(service='/taxonomy/ids/{ids}/node', entry={'ids': query}, export='json')
-            results = json.loads(results)['taxonomies']
-            for taxon in results:
+        with tqdm(total=len(taxa), desc='check_self', disable=not verbose) as pbar:
+            max_query_size = 50
+            results = []
+            with multiprocessing.Pool(max(nproc, 10)) as pool:
+                for i in range(int(np.ceil(len(taxa)/max_query_size))):
+                    query = ','.join([str(i) for i in taxa[i*max_query_size:(i+1)*max_query_size]])
+                    results.append(pool.apply_async(
+                        get_Proteins,
+                        args=tuple(),
+                        kwds=dict(service='/taxonomy/ids/{ids}/node', entry={'ids': query}, export='json'),
+                        callback=callback
+                    ))
+                pool.close()
+                pool.join()
+        for result in results:
+            for taxon in json.loads(result.get())['taxonomies']:
                 if taxon.get('rank') == rank:
                     d[taxon['taxonomyId']] = taxon['taxonomyId']
 
     results = []
-    with multiprocessing.Pool(nproc) as pool:
-        for taxon in set(taxa) - set([k for k in d.keys() if d[k] is not None]):
-            results.append(
-                pool.apply_async(
+    taxa = set(taxa) - set([k for k in d.keys() if d[k] is not None])
+    with tqdm(total=len(taxa), desc='lookup_lineage', disable=not verbose or len(taxa) == 0) as pbar:
+        with multiprocessing.Pool(nproc) as pool:
+            for taxon in taxa:
+                results.append(pool.apply_async(
                     get_Proteins,
-                    tuple(),
-                    {'service': '/taxonomy/lineage/{id}', 'entry': {'id': taxon}, 'export': 'json'}))
-        pool.close()
-        pool.join()
+                    args=tuple(),
+                    kwds=dict(service='/taxonomy/lineage/{id}', entry={'id': taxon}, export='json'),
+                    callback=callback
+                ))
+            pool.close()
+            pool.join()
 
     lineages = [result.get() for result in results]
     for lineage in lineages:
