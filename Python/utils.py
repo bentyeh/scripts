@@ -29,6 +29,30 @@ def isfloat(s):
         return False
     return True
 
+def get_available_cpus(job_scheduler=None):
+    '''
+    Get the number of CPUs the current process can use.
+
+    Args
+    - job_scheduler: str. default=None
+        Job scheduling environment. Currently supports 'SLURM'
+
+    Returns: int or None
+      May return None if the number of CPUs in the system is undetermined.
+
+    See https://docs.python.org/3/library/os.html#os.cpu_count.
+    '''
+    try:
+        return len(os.sched_getaffinity(0))
+    except:
+        try:
+            if job_scheduler and job_scheduler.upper() == 'SLURM':
+                return os.environ['SLURM_CPUS_PER_TASK']
+        except:
+            pass
+    print('Unable to detect number of available CPUs. Returning number of total CPUs.', file=sys.stderr)
+    return os.cpu_count()
+
 def wrap_signal_handler(fun, sig, handler=signal.SIG_DFL):
     '''
     Wrap a function with a signal handler.
@@ -55,17 +79,17 @@ def wrap_signal_handler(fun, sig, handler=signal.SIG_DFL):
 def intervals_merge(intervals):
     '''
     Merge intervals.
-    
+
     Args
     - intervals: list of 2-tuples of real numbers
         List of (start, stop) intervals
-    
+
     Returns: list of 2-tupes of real numbers
     '''
     n_intervals = len(intervals)
     if n_intervals < 2:
         return intervals
-    
+
     start_dtype, end_dtype = int, int
     if any([np.issubdtype(type(interval[0]), np.floating) for interval in intervals]):
         start_dtype = float
@@ -349,6 +373,10 @@ class ThreadPool:
             w.start()
         self.dt.start()
 
+    def __del__(self):
+        # timeout is necessary to prevent deadlock - see https://docs.python.org/3/reference/datamodel.html#object.__del__
+        self.terminate(timeout=10)
+
     def schedule(self, name, cmd, ignore_sigint=True):
         '''
         Args
@@ -490,20 +518,26 @@ class ThreadPool:
             if _return:
                 return (never_run, queued, running, error, success)
 
-    def terminate(self):
-        with self.queue_lock:
-            # clear queue
-            self.queue.clear()
+    def terminate(self, timeout=-1):
+        lock_acquired = self.queue_lock.acquire(timeout=timeout)
+        if lock_acquired:
+            try:
+                # clear queue
+                self.queue.clear()
 
-            # terminate processes
-            for p in self.running.values():
-                p.terminate()
+                # terminate processes
+                for p in self.running.values():
+                    p.terminate()
 
-            # clear thunk_scheduler
-            while self.thunk_scheduler.acquire(blocking=False):
-                pass
+                # clear thunk_scheduler
+                while self.thunk_scheduler.acquire(blocking=False):
+                    pass
 
-            self.terminated = True
+                self.terminated = True
+            finally:
+                self.queue_lock.release()
+        else:
+            print('terminate() called unsuccessfully. Could not acquire queue lock.', file=sys.stderr)
 
     def join(self):
         # wait until all scheduled functions have executed to completion
