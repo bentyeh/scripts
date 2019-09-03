@@ -2,7 +2,9 @@
 
 import argparse, getpass, subprocess
 
-parser = argparse.ArgumentParser(description='SSH port forwarding')
+parser = argparse.ArgumentParser(
+    description='SSH port forwarding',
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('loc_port', type=int,
     help='local port from which to forward network requests')
 parser.add_argument('--host', type=str, default='localhost',
@@ -12,7 +14,7 @@ parser.add_argument('host_port', type=int,
 parser.add_argument('remote', type=str,
     help='server hostname receiving forwarded network requests')
 parser.add_argument('--bind', type=str, default='localhost',
-    help='length of reference sequence k-mers to index')
+    help='bind the connection to a specific address')
 parser.add_argument('--middle_host', type=str,
     help='intermediary server hostname for 2-hop port forwarding')
 parser.add_argument('--middle_port', type=int,
