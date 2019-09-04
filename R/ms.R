@@ -228,18 +228,21 @@ calibrate_spectrum <- function(
       "Number of detected peaks ({n_detected_peaks}) < min_peaks ",
       "({min_peaks}). Not calibrating."
     ))
+    if (verbose) {
+      cat("Using identity model.\n")
+    }
     model <- function(x) {return(identity)}
   }
 
   if (identical(model, "auto")) {
-    model <- if_else(n_detected_peaks > 3, "spline", "lm")
+    model <- ifelse(n_detected_peaks > 3, "spline", "lm")
     if (verbose) {
       print(stringr::str_glue("Using {model} model."))
     }
   }
 
   ref_masses <- ref_masses[detected_peaks]
-  peaks <- peaks[detected_peaks,]
+  peaks <- peaks[detected_peaks, , drop = FALSE]
 
   df <- data.frame(x = peaks[, 1], y = ref_masses)
   if (is.character(model) && model %in% c("loess", "lm", "quad")) {
@@ -257,16 +260,23 @@ calibrate_spectrum <- function(
 
   if (verbose) {
     residuals <- peaks[, 1] - ref_masses
+    if (length(residuals) == 0) {
+      residuals <- NA
+    }
     rss <- sum(residuals ^ 2)
-    cat("Residuals (original):")
+    cat("Residuals (original):\n")
     cat(residuals)
     cat("\n\n")
     print(stringr::str_glue("RSS (original): {rss}"))
 
     residuals <- warp(peaks[,1]) - ref_masses
+    if (length(residuals) == 0) {
+      residuals <- NA
+    }
     if (!is.character(model)) {
-      try(print(summary(model)), silent = TRUE)
-    } else {
+      tmp <- try(print(summary(model)), silent = TRUE)
+    } 
+    if (is.character(model) || identical(class(tmp), "try-error")) {
       cat("Residuals (fitted):\n")
       cat(residuals)
       cat("\n\n")
