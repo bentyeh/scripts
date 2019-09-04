@@ -628,4 +628,27 @@ def blastToDf(records):
         return None
     return pd.DataFrame(hsps)
 
+SAM_HEADER = ['QNAME', 'FLAG', 'RNAME', 'POS', 'MAPQ', 'CIGAR', 'RNEXT', 'PNEXT', 'TLEN', 'SEQ', 'QUAL', 'OTHER']
+def samToDf(file):
+    if isinstance(file, str):
+        f = utils_files.createFileObject(file)
+    elif isinstance(file, io.IOBase):
+        f = file
+    else:
+        raise ValueError('`file` must be a string or file object')
+
+    entries = []
+    for line in f:
+        if line.startswith('@'):
+            continue
+        data = line.strip().split('\t')
+        if len(data) > 11:
+            data = data[:11] + [' '.join(data[11:])]
+        if len(data) == 11:
+            data.append('')
+        entries.append(data)
+    f.close()
+    df = pd.DataFrame(data=entries, columns=SAM_HEADER)
+    return df
+
 # endregion --- Sequence alignment tools
