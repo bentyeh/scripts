@@ -118,7 +118,7 @@ calibrate_spectrum <- function(
   min_peaks = NULL,
   tol = 1e3,
   tol_units = "ppm",
-  model = "loess",
+  model = "auto",
   return_function = FALSE,
   verbose = TRUE) {
   # Calibrate spectrum based on reference masses.
@@ -141,16 +141,18 @@ calibrate_spectrum <- function(
   #     - "mad": Cardinal:::.estimateNoiseMAD()
   #     If function: must be of the form f(spectrum, mass) -> numeric
   # - min_peaks: integer. default = NULL
-  #     Minimum required number of peaks in ref_masses to detect in spectrum.
-  #     Defaults to length(ref_masses)
+  #     Minimum required number of peaks in ref_masses to detect in spectrum. If not satisfied,
+  #     returns the spectrum as is (or returns the identity function if `return_function`` is TRUE.)
+  #     Defaults to length(ref_masses).
   # - tol: numeric. default = 1e3. length = 1 or length(ref_masses)
   #     Mass tolerance window for peak identification.
   # - tol_units: character. default = "ppm". length = length(tol)
   #     "mz" or "ppm"
-  # - model: character or function. default = "loess"
+  # - model: character or function. default = "auto"
   #     Built-in options: "loess", "lm", "spline", "quad", "auto"
+  #       - "auto" uses "lm" if number of matched peaks
   #     To use a custom model, pass in a function that takes a data.frame (x = peaks, y = ref_masses)
-  #       as an argument and creates a model that can be used with stats::predict().
+  #       as an argument and returns a vectorized function mapping original to calibrated masses.
   # - return_function: logical. default = FALSE
   #     Return calibration function, as opposed to returning calibrated spectrum
   # - verbose: logical. default = TRUE
@@ -216,18 +218,21 @@ calibrate_spectrum <- function(
 
   snr <- peaks[, 2] / noise
   detected_peaks <- snr >= SNR
+  n_detected_peaks <- sum(detected_peaks)
   if (verbose) {
-    print(stringr::str_glue("Detected peaks ({sum(detected_peaks)}):"))
+    print(stringr::str_glue("Detected peaks ({n_detected_peaks}):"))
     print(data.frame(ref = ref_masses, detected_mass = peaks[,1], snr = snr, passed = detected_peaks))
   }
-  stopifnot(sum(detected_peaks) >= min_peaks)
+  if (n_detected_peaks < min_peaks) {
+    message(stringr::str_glue(
+      "Number of detected peaks ({n_detected_peaks}) < min_peaks ",
+      "({min_peaks}). Not calibrating."
+    ))
+    model <- function(x) {return(identity)}
+  }
 
-  if (model == "auto") {
-    model <- if_else(
-      sum(detected_peaks) > 3,
-      "spline",
-      "lm"
-    )
+  if (identical(model, "auto")) {
+    model <- if_else(n_detected_peaks > 3, "spline", "lm")
     if (verbose) {
       print(stringr::str_glue("Using {model} model."))
     }
@@ -237,17 +242,17 @@ calibrate_spectrum <- function(
   peaks <- peaks[detected_peaks,]
 
   df <- data.frame(x = peaks[, 1], y = ref_masses)
-  if (model %in% c("loess", "lm", "quad")) {
+  if (is.character(model) && model %in% c("loess", "lm", "quad")) {
     model <- list(
       loess = loess(y ~ x, data = df, span = 1, control = loess.control(surface = "direct")),
       lm = lm(y ~ x, data = df),
       quad = lm(y ~ poly(x, 2), data = df)
     )[[model]]
     warp <- function(x) pmax(predict(model, data.frame(x = x)), 0)
-  } else if (model == "spline") {
+  } else if (identical(model, "spline")) {
     warp <- splinefun(peaks[, 1], ref_masses, "natural")
   } else {
-    model <- model(df)
+    warp <- model(df)
   }
 
   if (verbose) {
@@ -260,7 +265,7 @@ calibrate_spectrum <- function(
 
     residuals <- warp(peaks[,1]) - ref_masses
     if (!is.character(model)) {
-      try(print(summary(model)))
+      try(print(summary(model)), silent = TRUE)
     } else {
       cat("Residuals (fitted):\n")
       cat(residuals)
