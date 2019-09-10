@@ -119,7 +119,9 @@ calibrate_spectrum <- function(
   tol = 1e3,
   tol_units = "ppm",
   model = "auto",
-  return_function = FALSE,
+  bg = NULL,
+  bg_ignore = NULL,
+  force = NULL,
   verbose = TRUE) {
   # Calibrate spectrum based on reference masses.
   # 
@@ -149,18 +151,54 @@ calibrate_spectrum <- function(
   # - tol_units: character. default = "ppm". length = length(tol)
   #     "mz" or "ppm"
   # - model: character or function. default = "auto"
-  #     Built-in options: "loess", "lm", "spline", "quad", "auto"
+  #     Built-in options: "loess", "lm", "spline", "quad", "auto", "identity"
   #       - "auto" uses "lm" if number of matched peaks
   #     To use a custom model, pass in a function that takes a data.frame (x = peaks, y = ref_masses)
   #       as an argument and returns a vectorized function mapping original to calibrated masses.
-  # - return_function: logical. default = FALSE
-  #     Return calibration function, as opposed to returning calibrated spectrum
+  # - bg: matrix. default = NULL
+  #     Mass spectrum, such as that returned by mzR::peaks(mzR_object)
+  #     - Column 1: mass value
+  #     - Column 2: intensity
+  #     Background mass spectrum for additional validation.
+  # - bg_ignore: vector, logical. default = NULL
+  #     Reference masses to ignore in the background (e.g., if using the matrix peak as a reference mass)
+  # - force: vector, logical. default = NULL
+  #     Force use of certain reference mass peaks
   # - verbose: logical. default = TRUE
   # 
-  # Returns: matrix or function
-  #   If `return_function` == TRUE: returns a function that takes a spectrum (2-column matrix)
-  #     and returns a calibrated spectrum.
-  #   Otherwise, returns a calibrated spectrum (2-column matrix).
+  # Returns: list
+  # - warp: function
+  #     Calibration function mapping numeric vector of uncalibrated masses to a numeric vector of calibrated masses
+  # - spectrum: matrix
+  #     Calibrated spectrum
+  # - noise_method: character or function
+  #     (same as argument)
+  # - min_peaks: integer
+  #     Resolved minimum number of peaks (i.e., if min_peaks argument was NULL)
+  # - SNR: numeric
+  #     (same as argument)
+  # - model: character or function
+  #     Resolved model (i.e., if model argument was "auto", or min_peaks threshold was not satisfied)
+  # - df: data.frame
+  #     ref_mass (numeric): reference masses
+  #     detected_mass (numeric): detected mass peaks of reference masses
+  #     tol: vector, numeric
+  #       Tolerance used for each reference mass in ppm
+  #     snr (numeric): SNR of detected mass peaks of reference masses, relative to the local region in the
+  #       calibration spectrum
+  #     detected_mass_bg (numeric; only present if bg != NULL): detected mass peaks of reference masses in
+  #       background spectrum
+  #     snr_bg (numeric; only present if bg != NULL): SNR of detected mass peaks of reference masses,
+  #       relative to the detected mass peaks in the background spectrum
+  #     passed (logical): whether the reference mass peak was ultimately used for calibration
+  #     residuals_uncalibrated (numeric): residuals between detected_mass and reference_mass
+  #     residuals_calibrated (numeric): residuals after calibration
+  # - mse_uncal: numeric
+  #     Mean squared error of uncalibrated reference masses
+  # - mse_cal: numeric
+  #     Mean squared error of calibrated reference masses
+  # - model_summary: summary.lm or summary.loess. Only present if model is "lm", "loess", or "quad"
+  #     Model summary as returned by summary() on a lm() or loess() model object
   # 
   # Notes
   # - Arguments inspired by AB/SCIEX 5800 Series Explorer's Processing Method parameters.
@@ -170,15 +208,24 @@ calibrate_spectrum <- function(
   if (is.null(min_peaks)) {
     min_peaks <- length(ref_masses)
   }
-  if (identical(noise_method, "runmed")) {
-    noise_method <- noiseRunMed
+  min_peaks <- as.integer(min_peaks)
+  if (is.null(bg_ignore)) {
+    bg_ignore <- rep(FALSE, length(ref_masses))
+  }
+  if (is.null(force)) {
+    force <- rep(FALSE, length(ref_masses))
   }
   stopifnot(tol_units %in% c("mz", "ppm"))
   stopifnot(min_peaks <= length(ref_masses))
   stopifnot(length(tol) == length(tol_units))
   stopifnot(length(tol) %in% c(1, length(ref_masses)))
-  stopifnot(rlang::is_callable(noise_method) || noise_method %in% c("simple", "adaptive", "mad"))
-  stopifnot(rlang::is_callable(model) || model %in% c("loess", "lm", "quad", "spline", "auto"))
+  stopifnot(rlang::is_callable(noise_method) || noise_method %in% c("simple", "adaptive", "mad", "runmed"))
+  stopifnot(rlang::is_callable(model) || model %in% c("loess", "lm", "quad", "spline", "auto", "identity"))
+
+  noise_method_fun <- noise_method
+  if (identical(noise_method_fun, "runmed")) {
+    noise_method_fun <- noiseRunMed
+  }
 
   n <- length(ref_masses)
 
@@ -200,42 +247,70 @@ calibrate_spectrum <- function(
   }
 
   noise <- vector("numeric", n)
-  if (rlang::is_callable(noise_method)) {
+  if (rlang::is_callable(noise_method_fun)) {
     for (i in 1:n) {
-      noise[i] <- noise_method(spectrum, peaks[i, 1])
+      noise[i] <- noise_method_fun(spectrum, peaks[i, 1])
     }
   } else {
-    noise_method <- list(
+    noise_method_fun <- list(
       simple = Cardinal:::.estimateNoiseSimple,
       adaptive = Cardinal:::.estimateNoiseAdaptive,
       mad = Cardinal:::.estimateNoiseMAD
-    )[[noise_method]]
-    noise_all <- noise_method(spectrum[, 2])
+    )[[noise_method_fun]]
+    noise_all <- noise_method_fun(spectrum[, 2])
     for (i in 1:n) {
       noise[i] <- noise_all[spectrum[,1] == peaks[i, 1]]
     }
   }
-
   snr <- peaks[, 2] / noise
-  detected_peaks <- snr >= SNR
-  n_detected_peaks <- sum(detected_peaks)
-  if (verbose) {
-    print(stringr::str_glue("Detected peaks ({n_detected_peaks}):"))
-    print(data.frame(ref = ref_masses, detected_mass = peaks[,1], snr = snr, passed = detected_peaks))
-  }
-  if (n_detected_peaks < min_peaks) {
-    message(stringr::str_glue(
-      "Number of detected peaks ({n_detected_peaks}) < min_peaks ",
-      "({min_peaks}). Not calibrating."
-    ))
-    if (verbose) {
-      cat("Using identity model.\n")
+
+  if (is.null(bg)) {
+    detected_peaks <- snr >= SNR
+    df <- data.frame(
+      ref_mass = ref_masses,
+      detected_mass = peaks[, 1],
+      tol = tol,
+      snr = snr,
+      passed = detected_peaks
+    )
+  } else {
+    peaks_bg <- matrix(NA_real_, nrow = n, ncol = 2)
+    for (i in 1:n) {
+      peaks_bg[i, ] <- getMassPeak(bg, ref_masses[i], tol_ppm = tol[i])
     }
-    model <- function(x) {return(identity)}
+
+    snr <- peaks[, 2] / noise
+    snr_bg <- (peaks[, 2] / sum(spectrum[, 2])) / (peaks_bg[, 2] / sum(bg[, 2]))
+    detected_peaks <- ((snr >= SNR) & ((snr_bg >= SNR) | bg_ignore)) | force
+    n_detected_peaks <- sum(detected_peaks)
+    df <- data.frame(
+      ref_mass = ref_masses,
+      detected_mass = peaks[, 1],
+      tol = tol,
+      snr = snr,
+      detected_mass_bg = peaks_bg[, 1],
+      snr_bg = snr_bg,
+      passed = detected_peaks
+    )
+  }
+  if (tibble::has_rownames(df)) {
+    df <- df %>% tibble::rownames_to_column(var = "ref_name")
+  }
+  n_detected_peaks <- sum(detected_peaks)
+
+  if (verbose) {
+    print(stringr::str_glue("Detected {n_detected_peaks} / {n} reference peaks."))
   }
 
-  if (identical(model, "auto")) {
-    model <- ifelse(n_detected_peaks > 3, "spline", "lm")
+  if (identical(model, "auto") || n_detected_peaks < min_peaks) {
+    if (n_detected_peaks < min_peaks) {
+      message(stringr::str_glue(
+        "Number of detected peaks ({n_detected_peaks}) < min_peaks ({min_peaks}). Not calibrating."
+      ))
+      model <- "identity"
+    } else {
+      model <- ifelse(n_detected_peaks > 3, "spline", "lm")
+    }
     if (verbose) {
       print(stringr::str_glue("Using {model} model."))
     }
@@ -244,53 +319,64 @@ calibrate_spectrum <- function(
   ref_masses <- ref_masses[detected_peaks]
   peaks <- peaks[detected_peaks, , drop = FALSE]
 
-  df <- data.frame(x = peaks[, 1], y = ref_masses)
+  df_xy <- data.frame(x = peaks[, 1], y = ref_masses)
+  model_obj <- NULL
   if (is.character(model) && model %in% c("loess", "lm", "quad")) {
-    model <- list(
-      loess = loess(y ~ x, data = df, span = 1, control = loess.control(surface = "direct")),
-      lm = lm(y ~ x, data = df),
-      quad = lm(y ~ poly(x, 2), data = df)
-    )[[model]]
-    warp <- function(x) pmax(predict(model, data.frame(x = x)), 0)
+    if (model == "loess") {
+      model_obj <- loess(y ~ x, data = df_xy, span = 1, control = loess.control(surface = "direct"))
+    } else if (model == "lm") {
+      model_obj <- lm(y ~ x, data = df_xy)
+    } else {
+      model_obj <- lm(y ~ poly(x, 2), data = df_xy)
+    }
+    warp <- function(x) pmax(predict(model_obj, data.frame(x = x)), 0)
   } else if (identical(model, "spline")) {
     warp <- splinefun(peaks[, 1], ref_masses, "natural")
+  } else if (identical(model, "identity")) {
+    warp <- identity
   } else {
-    warp <- model(df)
+    warp <- model(df_xy)
+  }
+  spectrum[, 1] <- warp(spectrum[, 1])
+
+  df[["residuals_uncalibrated"]] <- NA_real_
+  df[["residuals_uncalibrated"]][detected_peaks] <- peaks[, 1] - ref_masses
+  df[["residuals_calibrated"]] <- NA_real_
+  df[["residuals_calibrated"]][detected_peaks] <- warp(peaks[,1]) - ref_masses
+  if (n_detected_peaks > 0) {
+    mse_uncal <- sum(df[["residuals_uncalibrated"]] ^ 2, na.rm = TRUE) / n_detected_peaks
+    mse_cal <- sum(df[["residuals_calibrated"]] ^ 2, na.rm = TRUE) / n_detected_peaks
+  } else {
+    mse_uncal <- NA
+    mse_cal <- NA
   }
 
   if (verbose) {
-    residuals <- peaks[, 1] - ref_masses
-    if (length(residuals) == 0) {
-      residuals <- NA
-    }
-    rss <- sum(residuals ^ 2)
-    cat("Residuals (original):\n")
-    cat(residuals)
-    cat("\n\n")
-    print(stringr::str_glue("RSS (original): {rss}"))
-
-    residuals <- warp(peaks[,1]) - ref_masses
-    if (length(residuals) == 0) {
-      residuals <- NA
-    }
-    if (!is.character(model)) {
-      tmp <- try(print(summary(model)), silent = TRUE)
-    } 
-    if (is.character(model) || identical(class(tmp), "try-error")) {
-      cat("Residuals (fitted):\n")
-      cat(residuals)
-      cat("\n\n")
-    }
-    rss <- sum(residuals ^ 2)
-    print(stringr::str_glue("RSS (fitted): {rss}"))
+    print(df)
+    print(stringr::str_glue("MSE (uncalibrated): {mse_uncal}"))
+    print(stringr::str_glue("MSE (calibrated): {mse_cal}"))
   }
 
-  if (return_function) {
-    return(warp)
-  } else {
-    spectrum[, 1] <- warp(spectrum[, 1])
-    return(spectrum)
+  retval <- list(
+    warp = warp,
+    spectrum = spectrum,
+    min_peaks = min_peaks,
+    noise_method = noise_method,
+    model = model,
+    df = df,
+    SNR = SNR,
+    mse_uncal = mse_uncal,
+    mse_cal = mse_cal
+  )
+
+  if (!is.null(model_obj)) {
+    retval[["model_summary"]] <- summary(model_obj)
+    if (verbose) {
+      print(retval[["model_summary"]])
+    }
   }
+
+  return(retval)
 }
 
 sliding_distance <- function(v1, v2, norm_fun = "1", range = NULL, verbose = FALSE) {
@@ -462,7 +548,8 @@ focusSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm
 }
 
 plotSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm = 1e4,
-                         show_noise = FALSE, noise_col = "red", plotter = 'baseR', ...) {
+                         show_noise = FALSE, noise_col = "red", plotter = "baseR", overlay = FALSE,
+                         ...) {
   # Create basic plot (bar chart) of mass spectrum. By default, labels the
   # x-axis "m/z" and the y-axis "count".
   # 
@@ -476,13 +563,24 @@ plotSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm 
   # - show_noise: bool or numeric. default = TRUE
   #     TRUE: compute and plot noise line
   #     numeric: plot given noise line
-  # - plotter: character. default = 'baseR'
-  #     'baseR': create base R plot
-  #     'ggplot': create ggplot2 plot
+  # - plotter: character. default = "baseR"
+  #     "baseR": create base R plot
+  #     "ggplot": create ggplot2 plot
+  # - overlay: logical or ggplot. default = FALSE
+  #     Overlay current plot on existing plot.
   # - ...
-  #     Arguments to pass to base R plotter
+  #     Arguments to pass to base R plotter or aes() within geom_col()
   # 
   # Returns: NULL (`plotter` == 'baseR') or ggplot (`plotter` == 'ggplot')
+  # 
+  # Examples
+  # 1. Overlay 2 spectra with different colors using baseR plotter
+  #   plotSpectrum(spectrum1, mass = 100, col = "red")
+  #   plotSpectrum(spectrum2, mass = 100, col = "blue", overlay = TRUE)
+  # 2. Overlay 2 spectra with different colors using ggplot plotter
+  #   g <- plotSpectrum(spectrum1, mass = 100, plotter = "ggplot", fill = "red", alpha = 0.5)
+  #   g <- plotSpectrum(spectrum2, mass = 100, plotter = "ggplot", fill = "blue", alpha = 0.5, overlay = g)
+  #   g + guides(alpha = "none", fill = guide_legend(title = "spectra"))
 
   spectrum <- focusSpectrum(spectrum, min, max, mass, tol_ppm)
   xlim <- c(min(spectrum[,1]), max(spectrum[,1]))
@@ -516,19 +614,30 @@ plotSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm 
     }
   }
 
-  if (plotter == 'baseR') {
-    do.call(plot, args)
+  if (plotter == "baseR") {
+    if (overlay) {
+      tryCatch(do.call(lines, args), error = function(e) do.call(plot, args))
+    } else {
+      do.call(plot, args)
+    }
     if (is.numeric(show_noise)) {
       abline(h = show_noise, col = noise_col)
     }
   } else {
     colnames(spectrum) <- c("m/z", "count")
-    g <-
-      spectrum %>%
-      as_tibble() %>%
-      ggplot(aes(`m/z`, count)) +
-      geom_col() +
-      labs(x = "m/z")
+    if ("ggplot" %in% class(overlay)) {
+      g <-
+        overlay + 
+        geom_col(aes(`m/z`, count, ...), data = as_tibble(spectrum)) + 
+        labs(x = "m/z")
+    } else {
+      g <-
+        spectrum %>%
+        as_tibble() %>%
+        ggplot(aes(`m/z`, count, ...)) +
+        geom_col() +
+        labs(x = "m/z")
+    }
     if (is.numeric(show_noise)) {
       g <- 
         g +
