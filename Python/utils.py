@@ -267,7 +267,7 @@ def df_split_row(df, col, sep, keep=False):
     new_df[col] = new_values
     return new_df
 
-def pandas_apply_parallel(grouped, func, nproc=None, concat=True, **kwargs):
+def pandas_apply_parallel(grouped, func, nproc=None, concat_axis=None, **kwargs):
     '''
     Parallel pandas.DataFrame.apply
 
@@ -277,16 +277,17 @@ def pandas_apply_parallel(grouped, func, nproc=None, concat=True, **kwargs):
         Accepts a pandas.Series or pandas.DataFrame
     - nproc: int. default=None
         Number of processes to use. If None, defaults to the number of usable CPUs.
-    - concat: bool or None. default=True
-        Specifies the return type
-          True: Concatenate results (outputs of `func`) with pandas.concat().
-          False: List where each element is the result of applying `func` to a group.
-          None: Returns None
-    - **kwargs:
-        Additional arguments to pass to func
+    - concat_axis: 0 or 1. default=None
+        None: Return a dict where names are the group names and values are the result of
+          applying `func` to a group.
+        0 or 1: Return a pandas DataFrame consisting of the results concatenated along the axis
+          given by `concat_axis'
+    - **kwargs
+        Additional keyword arguments (e.g., kwds, callback, error_callback) to pass to
+        multiprocessing.Pool.apply_async().
 
-    Returns: pandas.DataFrame, list, or None
-      See the `concat` argument.
+    Returns: pandas.DataFrame or dict
+      See the `concat_axis` argument.
 
     Based on https://stackoverflow.com/a/29281494
     '''
@@ -297,21 +298,18 @@ def pandas_apply_parallel(grouped, func, nproc=None, concat=True, **kwargs):
             nproc = os.cpu_count()
 
     with multiprocessing.Pool(nproc) as pool:
-        # ret_list = pool.map(func, [group for name, group in grouped])
-        result_list = []
-        for _, group in grouped:
-            result_list.append(pool.apply_async(func, (group,), kwargs))
+        result_dict = {name: pool.apply_async(func, (group,), **kwargs) for name, group in grouped}
         pool.close()
         pool.join()
 
-    if concat is None:
-        return None
-
-    results = [result.get() for result in result_list]
-    if concat:
-        return pd.concat(results)
-    else:
+    results = {name: result.get() for name, result in result_dict.items()}
+    if concat_axis is None:
         return results
+    else:
+        df = pd.concat(results, axis=concat_axis)
+        if concat_axis:
+            df = df.transpose()
+        return df
 
 class ThreadPool:
     '''

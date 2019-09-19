@@ -388,8 +388,7 @@ def fastaToDf(file, save='', header_prefix='>', headerParser=parseDefaultHeader,
 
     Args
     - file: str or io.IOBase
-        Path to FASTA file, or file object. Gzip-compressed files with extension '.gz'
-        are accepted.
+        Path to FASTA file, or file object. Standard compression extensions accepted.
     - header_prefix: str. default='>'
         FASTA header line prefix
     - headerParser: function. default = parseUniProtHeader
@@ -549,6 +548,81 @@ def bedOverlapIndices(bed):
 
 # endregion --- BED tools
 
+# region ------ SAM tools
+
+SAM_COLUMN_TYPES = {
+    'QNAME': str,
+    'FLAG': int,
+    'RNAME': str,
+    'POS': int,
+    'MAPQ': int,
+    'CIGAR': str,
+    'RNEXT': str,
+    'PNEXT': int,
+    'TLEN': int,
+    'SEQ': str,
+    'QUAL': str,
+    'OTHER': str
+}
+
+def samToDf(file):
+    '''
+    Parse SAM file into dataframe.
+
+    Args
+    - file: str or io.IOBase
+        Path to SAM file, or file object. Standard compression extensions accepted.
+
+    Returns: pandas.DataFrame
+      Columns and types are based on SAM_COLUMN_TYPES. If a column is unable to be
+      cast to int type, it remains as a str/object type.
+      - 'QNAME': str
+      - 'FLAG': int
+      - 'RNAME': str
+      - 'POS': int
+      - 'MAPQ': int
+      - 'CIGAR': str
+      - 'RNEXT': str
+      - 'PNEXT': int
+      - 'TLEN': int
+      - 'SEQ': str
+      - 'QUAL': str
+      - 'OTHER': str
+    '''
+    if isinstance(file, str):
+        f = utils_files.createFileObject(file)
+    elif isinstance(file, io.IOBase):
+        f = file
+    else:
+        raise ValueError('`file` must be a string or file object')
+
+    try:
+        entries = []
+        for line in f:
+            if line.startswith('@'):
+                continue
+            data = line.strip().split('\t')
+            if len(data) > 11:
+                data = data[:11] + [' '.join(data[11:])]
+            if len(data) == 11:
+                data.append('')
+            entries.append(data)
+    finally:
+        f.close()
+
+    df = pd.DataFrame(data=entries, columns=SAM_COLUMN_TYPES.keys())
+    for column, dtype in SAM_COLUMN_TYPES.items():
+        if dtype == str:
+            continue
+        try:
+            df[column] = df[column].astype(dtype)
+        except Exception as e:
+            print(e, file=sys.stderr)
+            print(f'Failed to convert column {column} to dtype {dtype}.', file=sys.stderr)
+    return df
+
+# endregion --- SAM tools
+
 # region ------ Sequence alignment tools
 
 ## BLAST
@@ -627,28 +701,5 @@ def blastToDf(records):
     if len(hsps) == 0:
         return None
     return pd.DataFrame(hsps)
-
-SAM_HEADER = ['QNAME', 'FLAG', 'RNAME', 'POS', 'MAPQ', 'CIGAR', 'RNEXT', 'PNEXT', 'TLEN', 'SEQ', 'QUAL', 'OTHER']
-def samToDf(file):
-    if isinstance(file, str):
-        f = utils_files.createFileObject(file)
-    elif isinstance(file, io.IOBase):
-        f = file
-    else:
-        raise ValueError('`file` must be a string or file object')
-
-    entries = []
-    for line in f:
-        if line.startswith('@'):
-            continue
-        data = line.strip().split('\t')
-        if len(data) > 11:
-            data = data[:11] + [' '.join(data[11:])]
-        if len(data) == 11:
-            data.append('')
-        entries.append(data)
-    f.close()
-    df = pd.DataFrame(data=entries, columns=SAM_HEADER)
-    return df
 
 # endregion --- Sequence alignment tools
