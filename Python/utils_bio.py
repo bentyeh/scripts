@@ -2,7 +2,7 @@
 import sys, os
 sys.path.append(os.path.dirname(__file__))
 
-import copy, io, re
+import copy, io, re, subprocess, tempfile
 
 import numpy as np
 import pandas as pd
@@ -382,12 +382,12 @@ def parseUCSCHeader(header, header_prefix='>', retainKeys=True, toInt=True):
         data = {key: value.strip() for key, value in data.items()}
     return data
 
-def fastaToDf(file, save='', header_prefix='>', headerParser=parseDefaultHeader, keepRawHeader=None, **kwargs):
+def fastaToDf(file, header_prefix='>', headerParser=parseDefaultHeader, keepRawHeader=None, **kwargs):
     '''
     Parse FASTA file into pandas DataFrame.
 
     Args
-    - file: str or io.IOBase
+    - file: str, io.IOBase, or tempfile._TemporaryFileWrapper
         Path to FASTA file, or file object. Standard compression extensions accepted.
     - header_prefix: str. default='>'
         FASTA header line prefix
@@ -404,11 +404,11 @@ def fastaToDf(file, save='', header_prefix='>', headerParser=parseDefaultHeader,
     '''
 
     if isinstance(file, str):
-        f = utils_files.createFileObject(file)
-    elif isinstance(file, io.IOBase):
-        f = file
+        f = utils_files.createFileObject(file, 'r')
     else:
-        raise ValueError('`file` must be a string or file object')
+        f = file
+        if not isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
+            print(f'Could not verify that file {file} is a file object. Continuing anyway...', file=sys.stderr)
 
     entries = []
     entry = {'seq': ''}
@@ -438,31 +438,38 @@ def fastaToDf(file, save='', header_prefix='>', headerParser=parseDefaultHeader,
     df = pd.DataFrame(entries)
     return df
 
-def dfToFasta(df, file=None, name_col='name', seq_col='seq', header_prefix='>'):
+def dfToFasta(df, file=None, close=True, name_col='name', seq_col='seq', header_prefix='>'):
     '''
+    Write FASTA file from dataframe of sequences.
+
     Args
     - df: pandas.DataFrame
         Table of names and sequences
-    - file: str or io.IOBase. default=None
-        Path to save FASTA file, or file object.
+    - file: str, io.IOBase, or tempfile._TemporaryFileWrapper. default=None
+        Path to save FASTA file, or file object. If None, prints to stdout.
+    - close: bool. default=True
+        Close file object before returning
     - name_col: str. default='name'
         Column to use as FASTA header
     - seq_col: str. default='seq'
         Column with sequences
     - header_prefix: str. default='>'
         FASTA header line prefix
+
+    Returns: None
     '''
 
     if isinstance(file, str):
-        f = utils_files.createFileObject(file, 'wt')
-    elif isinstance(file, io.IOBase):
-        f = file
+        f = utils_files.createFileObject(file, 'w')
     else:
-        raise ValueError('`file` must be a string or file object')
+        f = file
+        if not isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
+            print(f'Could not verify that file {file} is a file object. Continuing anyway...', file=sys.stderr)
 
     for _, row in df.iterrows():
         print(header_prefix + row[name_col], row[seq_col], sep='\n', end='\n\n', file=f)
-    f.close()
+    if close:
+        f.close()
 
 # endregion --- FASTA tools
 
@@ -565,13 +572,18 @@ SAM_COLUMN_TYPES = {
     'OTHER': str
 }
 
-def samToDf(file):
+def samToDf(file, exclude=None, nrows=None):
     '''
     Parse SAM file into dataframe.
 
     Args
-    - file: str or io.IOBase
+    - file: str, io.IOBase, or tempfile._TemporaryFileWrapper
         Path to SAM file, or file object. Standard compression extensions accepted.
+    - exclude: dict from int -> set of str. default=None
+        Map from column number (0-indexed) to values to exclude.
+        Example: To exclude read names (QNAME) of 'abc' or 'def', pass exclude={0: set(['abc', 'def'])}
+    - nrows: int. default=None
+        Number of rows of file to read.
 
     Returns: pandas.DataFrame
       Columns and types are based on SAM_COLUMN_TYPES. If a column is unable to be
@@ -590,15 +602,17 @@ def samToDf(file):
       - 'OTHER': str
     '''
     if isinstance(file, str):
-        f = utils_files.createFileObject(file)
-    elif isinstance(file, io.IOBase):
-        f = file
+        f = utils_files.createFileObject(file, 'r')
     else:
-        raise ValueError('`file` must be a string or file object')
+        f = file
+        if not isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
+            print(f'Could not verify that file {file} is a file object. Continuing anyway...', file=sys.stderr)
 
-    try:
+    with f:
         entries = []
-        for line in f:
+        for i, line in enumerate(f):
+            if nrows is not None and i > nrows:
+                break
             if line.startswith('@'):
                 continue
             data = line.strip().split('\t')
@@ -606,9 +620,11 @@ def samToDf(file):
                 data = data[:11] + [' '.join(data[11:])]
             if len(data) == 11:
                 data.append('')
+            if exclude is not None:
+                for idx, values in exclude.items():
+                    if data[idx] in values:
+                        continue
             entries.append(data)
-    finally:
-        f.close()
 
     df = pd.DataFrame(data=entries, columns=SAM_COLUMN_TYPES.keys())
     for column, dtype in SAM_COLUMN_TYPES.items():
@@ -620,6 +636,109 @@ def samToDf(file):
             print(e, file=sys.stderr)
             print(f'Failed to convert column {column} to dtype {dtype}.', file=sys.stderr)
     return df
+
+def bamToDf(file, samtools_path=None, use_tempfile=True, **kwargs):
+    '''
+    Parse BAM file into dataframe. Requires samtools.
+
+    Args
+    - file: str
+        Path to BAM file.
+    - samtools_path: str. default=None
+        Path to samtools executable. If None, assumes samtools is in PATH.
+    - use_tempfile: bool. default=True
+        True: converts BAM file to a temporary SAM file first; uses less memory
+        False: converts BAM file to SAM file in memory
+    - **kwargs
+        Additional keyword arguments to pass to samToDf().
+
+    Returns: pandas.DataFrame.
+      See samToDf().
+    '''
+    if samtools_path is None:
+        result = subprocess.run(['where' if os.name == 'nt' else 'which', 'samtools'], capture_output=True)
+        if result.retcode != 0:
+            raise NotImplementedError('Parsing BAM files relies on samtools, which was not found.')
+        samtools_path = result.stdout.splitlines()[0]
+
+    if use_tempfile:
+        with tempfile.NamedTemporaryFile(mode='r') as sam_file:
+            subprocess.run([samtools_path, 'view', file, '-o', sam_file.name])
+            return samToDf(sam_file.name)
+
+    sam_file = io.StringIO(subprocess.run([samtools_path, 'view', file], capture_output=True, text=True).stdout)
+    return samToDf(sam_file)
+
+def dfToSam(df, file, close=True):
+    '''
+    Write dataframe to SAM file with minimal required header.
+
+    Args
+    - df: pandas.DataFrame
+        DataFrame of SAM data
+    - file: str, io.IOBase, or tempfile._TemporaryFileWrapper
+        Path to save SAM file, or file object. Standard compression extensions accepted.
+    - close: bool. default=True
+        Close file object before returning
+
+    Returns: None
+    '''
+    if isinstance(file, str):
+        f = utils_files.createFileObject(file, 'w')
+    else:
+        f = file
+        if not isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
+            print(f'Could not verify that file {file} is a file object. Continuing anyway...', file=sys.stderr)
+
+    try:
+        sam_columns_strict = list(SAM_COLUMN_TYPES.keys())
+        sam_columns_strict.remove('OTHER')
+        other_columns = [col for col in df.columns if col not in sam_columns_strict]
+        print('@HD', 'VN:1.6', file=f, sep='\t')
+        df_header = df[['RNAME', 'TLEN']].copy()
+        df_header['TLEN'] = abs(df_header['TLEN'])
+        df_header = df_header.drop_duplicates('RNAME')
+        for _, row in df_header.iterrows():
+            print('@SQ', f'SN:{row["RNAME"]}', f'LN:{row["TLEN"]}', file=f, sep='\t')
+        df[sam_columns_strict + other_columns].to_csv(f, sep='\t', header=False, index=False)
+    finally:
+        if close:
+            try:
+                f.close()
+            except Exception as e:
+                 print(e)
+
+def dfToBam(df, file, samtools_path=None, use_tempfile=True):
+    '''
+    Write dataframe to BAM file with minimal required header.
+
+    Args
+    - df: pandas.DataFrame
+        DataFrame of SAM data
+    - file: str
+        Path to BAM file.
+    - samtools_path: str. default=None
+        Path to samtools executable. If None, assumes samtools is in PATH.
+    - use_tempfile: bool. default=True
+        True: writes table to a temporary SAM file first before converting to BAM file; uses less memory
+        False: writes table directly to BAM file
+
+    Returns: None
+    '''
+    if samtools_path is None:
+        result = subprocess.run(['where' if os.name == 'nt' else 'which', 'samtools'], capture_output=True)
+        if result.retcode != 0:
+            raise NotImplementedError('Parsing BAM files relies on samtools, which was not found.')
+        samtools_path = result.stdout.splitlines()[0]
+
+    if use_tempfile:
+        with tempfile.NamedTemporaryFile(mode='w') as sam_file:
+            dfToSam(df, sam_file.name)
+            subprocess.run([samtools_path, 'view', '-h', '-b', '-o', file, sam_file.name])
+    else:
+        with io.StringIO() as buf:
+            dfToSam(df, buf, close=False)
+            subprocess.run([samtools_path, 'view', '-h', '-b', '-o', file], input=buf.getvalue().encode())
 
 # endregion --- SAM tools
 
