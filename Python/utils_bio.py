@@ -387,7 +387,7 @@ def fastaToDf(file, header_prefix='>', headerParser=parseDefaultHeader, keepRawH
     Parse FASTA file into pandas DataFrame.
 
     Args
-    - file: str, io.IOBase, or tempfile._TemporaryFileWrapper
+    - file: str or file object
         Path to FASTA file, or file object. Standard compression extensions accepted.
     - header_prefix: str. default='>'
         FASTA header line prefix
@@ -445,7 +445,7 @@ def dfToFasta(df, file=None, close=True, name_col='name', seq_col='seq', header_
     Args
     - df: pandas.DataFrame
         Table of names and sequences
-    - file: str, io.IOBase, or tempfile._TemporaryFileWrapper. default=None
+    - file: str or file object. default=None
         Path to save FASTA file, or file object. If None, prints to stdout.
     - close: bool. default=True
         Close file object before returning
@@ -557,33 +557,54 @@ def bedOverlapIndices(bed):
 
 # region ------ SAM tools
 
+# References
+# - SAM specification: https://samtools.github.io/hts-specs/SAMv1.pdf
+# - SAM flags tool: https://www.samformat.info/sam-format-flag
+
+# See section 1.4 (The alignment section: mandatory fields) of the SAM specification
 SAM_COLUMN_TYPES = {
     'QNAME': str,
-    'FLAG': int,
+    'FLAG': np.uint16,
     'RNAME': str,
-    'POS': int,
-    'MAPQ': int,
+    'POS': np.uint32,
+    'MAPQ': np.uint8,
     'CIGAR': str,
     'RNEXT': str,
-    'PNEXT': int,
-    'TLEN': int,
+    'PNEXT': np.uint32,
+    'TLEN': np.int64,
     'SEQ': str,
     'QUAL': str,
     'OTHER': str
 }
 
-def samToDf(file, exclude=None, nrows=None):
+def samToDf(file, exclude=None, use_pandas=True, **kwargs):
     '''
     Parse SAM file into dataframe.
 
     Args
-    - file: str, io.IOBase, or tempfile._TemporaryFileWrapper
+    - file: str or file object
         Path to SAM file, or file object. Standard compression extensions accepted.
     - exclude: dict from int -> set of str. default=None
         Map from column number (0-indexed) to values to exclude.
         Example: To exclude read names (QNAME) of 'abc' or 'def', pass exclude={0: set(['abc', 'def'])}
-    - nrows: int. default=None
-        Number of rows of file to read.
+        Only supported if `use_pandas=False`.
+    - use_pandas: bool. default=True
+        True: Parse SAM file using pandas.read_csv(). Only the first optional field will be kept.
+          Empirically ~3x faster.
+        False: All optional fields are kept but concatenated with a single space delimiter.
+    - **kwargs
+        Keyword arguments to pass to pandas.read_csv().
+        If `use_pandas=False`, only supports 'sep', 'comment', and 'nrows' arguments.
+        Default values:
+        - sep='\t',
+        - header=None,
+        - index_col=False,
+        - names=list(SAM_COLUMN_TYPES.keys()),
+        - usecols=list(SAM_COLUMN_TYPES.keys()),
+        - converters={'POS': lambda x: np.uint32(0) if x == '*' else np.uint32(x)},
+        - dtype=SAM_COLUMN_TYPES,
+        - nrows=None,
+        - comment='@'
 
     Returns: pandas.DataFrame
       Columns and types are based on SAM_COLUMN_TYPES. If a column is unable to be
@@ -601,34 +622,49 @@ def samToDf(file, exclude=None, nrows=None):
       - 'QUAL': str
       - 'OTHER': str
     '''
-    if isinstance(file, str):
-        f = utils_files.createFileObject(file, 'r')
+    args = dict(
+        sep='\t',
+        header=None,
+        index_col=False,
+        names=list(SAM_COLUMN_TYPES.keys()),
+        usecols=list(SAM_COLUMN_TYPES.keys()),
+#         converters={'POS': lambda x: np.uint32(0) if x == '*' else np.uint32(x)},
+        dtype=SAM_COLUMN_TYPES,
+        nrows=None,
+        comment='@'
+    )
+    args.update(kwargs)
+
+    if use_pandas:
+        df = pd.read_csv(file, **args)
     else:
-        f = file
-        if not isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
-            print(f'Could not verify that file {file} is a file object. Continuing anyway...', file=sys.stderr)
+        if isinstance(file, str):
+            f = utils_files.createFileObject(file, 'r')
+        else:
+            f = file
+            if not isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
+                print(f'Could not verify that file {file} is a file object. Continuing anyway...', file=sys.stderr)
+        with f:
+            entries = []
+            for i, line in enumerate(f):
+                if args['nrows'] is not None and i > args['nrows']:
+                    break
+                if line.startswith(args['comment']):
+                    continue
+                data = line.strip().split(args['sep'])
+                if len(data) > 11:
+                    data = data[:11] + [' '.join(data[11:])]
+                if len(data) == 11:
+                    data.append('')
+                if exclude is not None:
+                    for idx, values in exclude.items():
+                        if data[idx] in values:
+                            continue
+                entries.append(data)
+        df = pd.DataFrame(data=entries, columns=SAM_COLUMN_TYPES.keys())
 
-    with f:
-        entries = []
-        for i, line in enumerate(f):
-            if nrows is not None and i > nrows:
-                break
-            if line.startswith('@'):
-                continue
-            data = line.strip().split('\t')
-            if len(data) > 11:
-                data = data[:11] + [' '.join(data[11:])]
-            if len(data) == 11:
-                data.append('')
-            if exclude is not None:
-                for idx, values in exclude.items():
-                    if data[idx] in values:
-                        continue
-            entries.append(data)
-
-    df = pd.DataFrame(data=entries, columns=SAM_COLUMN_TYPES.keys())
     for column, dtype in SAM_COLUMN_TYPES.items():
-        if dtype == str:
+        if dtype == str or column not in df.columns:
             continue
         try:
             df[column] = df[column].astype(dtype)
@@ -637,7 +673,7 @@ def samToDf(file, exclude=None, nrows=None):
             print(f'Failed to convert column {column} to dtype {dtype}.', file=sys.stderr)
     return df
 
-def bamToDf(file, samtools_path=None, use_tempfile=True, **kwargs):
+def bamToDf(file, samtools_path=None, use_tempfile=True, parser=samToDf, **kwargs):
     '''
     Parse BAM file into dataframe. Requires samtools.
 
@@ -649,15 +685,16 @@ def bamToDf(file, samtools_path=None, use_tempfile=True, **kwargs):
     - use_tempfile: bool. default=True
         True: converts BAM file to a temporary SAM file first; uses less memory
         False: converts BAM file to SAM file in memory
+    - parser: function. default=samToDf
+        Function to parse file once the BAM file has been converted to SAM format.
     - **kwargs
-        Additional keyword arguments to pass to samToDf().
+        Additional keyword arguments to pass to parser.
 
-    Returns: pandas.DataFrame.
-      See samToDf().
+    Returns: depends on `parser`. The default samToDf() parser returns a pandas.DataFrame.
     '''
     if samtools_path is None:
         result = subprocess.run(['where' if os.name == 'nt' else 'which', 'samtools'], capture_output=True)
-        if result.retcode != 0:
+        if result.returncode != 0:
             raise NotImplementedError('Parsing BAM files relies on samtools, which was not found.')
         samtools_path = result.stdout.splitlines()[0]
 
@@ -667,7 +704,7 @@ def bamToDf(file, samtools_path=None, use_tempfile=True, **kwargs):
             return samToDf(sam_file.name)
 
     sam_file = io.StringIO(subprocess.run([samtools_path, 'view', file], capture_output=True, text=True).stdout)
-    return samToDf(sam_file)
+    return parser(sam_file)
 
 def dfToSam(df, file, close=True):
     '''
@@ -676,7 +713,7 @@ def dfToSam(df, file, close=True):
     Args
     - df: pandas.DataFrame
         DataFrame of SAM data
-    - file: str, io.IOBase, or tempfile._TemporaryFileWrapper
+    - file: str or file object
         Path to save SAM file, or file object. Standard compression extensions accepted.
     - close: bool. default=True
         Close file object before returning
@@ -727,7 +764,7 @@ def dfToBam(df, file, samtools_path=None, use_tempfile=True):
     '''
     if samtools_path is None:
         result = subprocess.run(['where' if os.name == 'nt' else 'which', 'samtools'], capture_output=True)
-        if result.retcode != 0:
+        if result.returncode != 0:
             raise NotImplementedError('Parsing BAM files relies on samtools, which was not found.')
         samtools_path = result.stdout.splitlines()[0]
 
