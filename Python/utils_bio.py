@@ -577,9 +577,39 @@ SAM_COLUMN_TYPES = {
     'OTHER': str
 }
 
+def fixSamColtypes(df, copy=True):
+    '''
+    Change column types of SAM DataFrame to those specified by SAM_COLUMN_TYPES.
+    
+    Args
+    - df: pandas.DataFrame
+        DataFrame of SAM data
+    - copy: bool. default=True
+        Make a deep copy of the Dataframe before modifying column types
+    
+    Returns: pandas.DataFrame
+      DataFrame of SAM data with updated column types.
+    '''
+    if copy:
+        df = df.copy()
+    for column, dtype in SAM_COLUMN_TYPES.items():
+        if column not in df.columns:
+            continue
+        try:
+            df[column] = df[column].astype(dtype)
+        except Exception as e:
+            print(e, file=sys.stderr)
+            print(f'Failed to convert column {column} to dtype {dtype}.', file=sys.stderr)
+    return df
+
 def samToDf(file, exclude=None, use_pandas=True, **kwargs):
     '''
     Parse SAM file into dataframe.
+    
+    For large SAM files, use the following arguments to return a TextFileReader object for iteration:
+    - use_pandas=True
+    - iterator=True
+    - [optional] chunksize=<int>
 
     Args
     - file: str or file object
@@ -601,7 +631,6 @@ def samToDf(file, exclude=None, use_pandas=True, **kwargs):
         - index_col=False,
         - names=list(SAM_COLUMN_TYPES.keys()),
         - usecols=list(SAM_COLUMN_TYPES.keys()),
-        - converters={'POS': lambda x: np.uint32(0) if x == '*' else np.uint32(x)},
         - dtype=SAM_COLUMN_TYPES,
         - nrows=None,
         - comment='@'
@@ -628,7 +657,6 @@ def samToDf(file, exclude=None, use_pandas=True, **kwargs):
         index_col=False,
         names=list(SAM_COLUMN_TYPES.keys()),
         usecols=list(SAM_COLUMN_TYPES.keys()),
-#         converters={'POS': lambda x: np.uint32(0) if x == '*' else np.uint32(x)},
         dtype=SAM_COLUMN_TYPES,
         nrows=None,
         comment='@'
@@ -662,15 +690,8 @@ def samToDf(file, exclude=None, use_pandas=True, **kwargs):
                             continue
                 entries.append(data)
         df = pd.DataFrame(data=entries, columns=SAM_COLUMN_TYPES.keys())
-
-    for column, dtype in SAM_COLUMN_TYPES.items():
-        if dtype == str or column not in df.columns:
-            continue
-        try:
-            df[column] = df[column].astype(dtype)
-        except Exception as e:
-            print(e, file=sys.stderr)
-            print(f'Failed to convert column {column} to dtype {dtype}.', file=sys.stderr)
+    fixSamColtypes(df, copy=False)
+    
     return df
 
 def bamToDf(file, samtools_path=None, use_tempfile=True, parser=samToDf, **kwargs):
@@ -732,11 +753,12 @@ def dfToSam(df, file, close=True):
         sam_columns_strict.remove('OTHER')
         other_columns = [col for col in df.columns if col not in sam_columns_strict]
         print('@HD', 'VN:1.6', file=f, sep='\t')
-        df_header = df[['RNAME', 'TLEN']].copy()
-        df_header['TLEN'] = abs(df_header['TLEN'])
-        df_header = df_header.drop_duplicates('RNAME')
+        df_header = df[['RNAME', 'TLEN']].drop_duplicates('RNAME')
+        df_header = df_header[df_header['RNAME'] != '*']
+        df_header['TLEN'] = abs(df_header['TLEN']).astype(int)
         for _, row in df_header.iterrows():
             print('@SQ', f'SN:{row["RNAME"]}', f'LN:{row["TLEN"]}', file=f, sep='\t')
+        df = fixSamColtypes(df, copy=True)
         df[sam_columns_strict + other_columns].to_csv(f, sep='\t', header=False, index=False)
     finally:
         if close:
