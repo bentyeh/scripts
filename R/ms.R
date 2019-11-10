@@ -647,3 +647,16 @@ plotSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm 
     return(g)
   }
 }
+
+bin_spectrum <- function(spectrum, decimals = 2, agg_fun = mean) {
+  binned_spectrum <- spectrum
+  binned_spectrum[,1] <- round(binned_spectrum[,1], decimals)
+  colnames(binned_spectrum) <- c("mass", "intensity")
+  binned_spectrum <- binned_spectrum %>%
+    as_tibble() %>% 
+    group_by(mass) %>% 
+    summarise(intensity = agg_fun(intensity)) %>% 
+    as.matrix()
+  colnames(binned_spectrum) <- colnames(spectrum)
+  return(binned_spectrum)
+}
