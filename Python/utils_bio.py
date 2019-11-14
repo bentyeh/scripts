@@ -438,7 +438,7 @@ def fastaToDf(file, header_prefix='>', headerParser=parseDefaultHeader, keepRawH
     df = pd.DataFrame(entries)
     return df
 
-def dfToFasta(df, file=None, close=True, name_col='name', seq_col='seq', header_prefix='>'):
+def dfToFasta(df, file=None, close=True, name_col='name', seq_col='seq', header_prefix='>', spacer='\n'):
     '''
     Write FASTA file from dataframe of sequences.
 
@@ -455,21 +455,28 @@ def dfToFasta(df, file=None, close=True, name_col='name', seq_col='seq', header_
         Column with sequences
     - header_prefix: str. default='>'
         FASTA header line prefix
+    - spacer: str. default='\n'
+        Space between sequences.
 
     Returns: None
     '''
 
-    if isinstance(file, str):
-        f = utils_files.createFileObject(file, 'w')
-    else:
-        f = file
-        if not isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
-            print(f'Could not verify that file {file} is a file object. Continuing anyway...', file=sys.stderr)
+    try:
+        if isinstance(file, str):
+            f = utils_files.createFileObject(file, 'w')
+        else:
+            f = file
+            if not isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
+                print(f'Could not verify that file {file} is a file object. Continuing anyway...', file=sys.stderr)
 
-    for _, row in df.iterrows():
-        print(header_prefix + row[name_col], row[seq_col], sep='\n', end='\n\n', file=f)
-    if close:
-        f.close()
+        for _, row in df.iterrows():
+            print(header_prefix + row[name_col], row[seq_col], sep='\n', end=spacer, file=f)
+    finally:
+        if close:
+            try:
+                f.close()
+            except:
+                pass
 
 # endregion --- FASTA tools
 
