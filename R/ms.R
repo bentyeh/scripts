@@ -17,6 +17,15 @@ mzR_to_MassSpectrum <- function(spectrum) {
   )
 }
 
+MassSpectrum_to_mzR <- function(MS) {
+  cbind(mass(MS), intensity(MS))
+}
+
+add_colnames <- function(spectrum, names = c("m/z", "count")) {
+  colnames(spectrum) <- names
+  return(spectrum)
+}
+
 mzR_to_MSImagingExperiment <- function(spectrum) {
   # Create Cardinal::MSImagingExperiment from mzR spectrum
   #
@@ -50,6 +59,11 @@ mzR_to_MSImageSet <- function(spectrum) {
     spectra = matrix(spectrum[,2]),
     mz = spectrum[,1]
   )
+}
+
+normalize_tic <- function(spectrum) {
+  spectrum[, 2] <- spectrum[, 2] / sum(spectrum[, 2])
+  return(spectrum)
 }
 
 getMassPeak <- function(spectrum, mass, tol_ppm = 1e3) {
