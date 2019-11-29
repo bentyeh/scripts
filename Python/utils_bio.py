@@ -701,7 +701,7 @@ def samToDf(file, exclude=None, use_pandas=True, **kwargs):
     
     return df
 
-def bamToDf(file, samtools_path=None, use_tempfile=True, parser=samToDf, **kwargs):
+def bamToDf(file, samtools_path=None, use_tempfile=True, parser=samToDf, verbose=True, **kwargs):
     '''
     Parse BAM file into dataframe. Requires samtools.
 
@@ -715,6 +715,8 @@ def bamToDf(file, samtools_path=None, use_tempfile=True, parser=samToDf, **kwarg
         False: converts BAM file to SAM file in memory
     - parser: function. default=samToDf
         Function to parse file once the BAM file has been converted to SAM format.
+    - verbose: bool. default=True
+        Print path to temporary SAM file if use_tempfile is True.
     - **kwargs
         Additional keyword arguments to pass to parser.
 
@@ -725,10 +727,13 @@ def bamToDf(file, samtools_path=None, use_tempfile=True, parser=samToDf, **kwarg
         if result.returncode != 0:
             raise NotImplementedError('Parsing BAM files relies on samtools, which was not found.')
         samtools_path = result.stdout.splitlines()[0]
+    assert os.path.exists(file)
 
     if use_tempfile:
         with tempfile.NamedTemporaryFile(mode='r') as sam_file:
             subprocess.run([samtools_path, 'view', file, '-o', sam_file.name])
+            if verbose:
+                print(f'Using temporary decompressed SAM file at {sam_file.name}')
             return samToDf(sam_file.name)
 
     sam_file = io.StringIO(subprocess.run([samtools_path, 'view', file], capture_output=True, text=True).stdout)
