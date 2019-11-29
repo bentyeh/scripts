@@ -18,7 +18,7 @@ mzR_to_MassSpectrum <- function(spectrum) {
 }
 
 MassSpectrum_to_mzR <- function(MS) {
-  cbind(mass(MS), intensity(MS))
+  cbind(MALDIquant::mass(MS), MALDIquant::intensity(MS))
 }
 
 add_colnames <- function(spectrum, names = c("m/z", "count")) {
@@ -234,7 +234,11 @@ calibrate_spectrum <- function(
   stopifnot(length(tol) == length(tol_units))
   stopifnot(length(tol) %in% c(1, length(ref_masses)))
   stopifnot(rlang::is_callable(noise_method) || noise_method %in% c("simple", "adaptive", "mad", "runmed"))
-  stopifnot(rlang::is_callable(model) || model %in% c("loess", "lm", "quad", "spline", "auto", "identity"))
+  stopifnot(
+    rlang::is_callable(model) ||
+    model %in% c("loess", "lm", "spline", "auto", "identity") ||
+    str_detect(model, "^poly[\\d.]+")
+  )
 
   noise_method_fun <- noise_method
   if (identical(noise_method_fun, "runmed")) {
@@ -323,7 +327,7 @@ calibrate_spectrum <- function(
       ))
       model <- "identity"
     } else {
-      model <- ifelse(n_detected_peaks > 3, "spline", "lm")
+      model <- ifelse(n_detected_peaks > 3, "loess", "lm")
     }
     if (verbose) {
       print(stringr::str_glue("Using {model} model."))
@@ -335,15 +339,17 @@ calibrate_spectrum <- function(
 
   df_xy <- data.frame(x = peaks[, 1], y = ref_masses)
   model_obj <- NULL
-  if (is.character(model) && model %in% c("loess", "lm", "quad")) {
-    if (model == "loess") {
-      model_obj <- loess(y ~ x, data = df_xy, span = 1, control = loess.control(surface = "direct"))
-    } else if (model == "lm") {
-      model_obj <- lm(y ~ x, data = df_xy)
-    } else {
-      model_obj <- lm(y ~ poly(x, 2), data = df_xy)
-    }
+  if (identical(model, "loess")) {
+    model_obj <- loess(y ~ x, data = df_xy, span = 1, control = loess.control(surface = "direct"))
     warp <- function(x) pmax(predict(model_obj, data.frame(x = x)), 0)
+  } else if (identical(model, "lm")) {
+    model_obj <- lm(y ~ x, data = df_xy)
+    warp <- function(x) pmax(predict(model_obj, data.frame(x = x)), 0)
+  } else if (is.character(model) && str_detect(model, "^poly[\\d.]+")) {
+    degree <- as.numeric(str_match(model, "poly([\\d.]+)")[2])
+    df_xy$z <- df_xy$x ^ degree
+    model_obj <- lm(y ~ x + z, data = df_xy)
+    warp <- function(x) pmax(predict(model_obj, data.frame(x = x, z = x ^ degree)), 0)
   } else if (identical(model, "spline")) {
     warp <- splinefun(peaks[, 1], ref_masses, "natural")
   } else if (identical(model, "identity")) {
@@ -673,4 +679,81 @@ bin_spectrum <- function(spectrum, decimals = 2, agg_fun = mean) {
     as.matrix()
   colnames(binned_spectrum) <- colnames(spectrum)
   return(binned_spectrum)
+}
+
+snr_mask <- function(mse, mask, mass, tol = 0.5) {
+  # Signal to noise ratio of mean intensities over all pixels in the mask at the specified mass
+  # 
+  # Args
+  # - mse: MSImagingExperiment
+  # - mask: vector, logical or integer
+  #     Logical or index (integer) mask of pixels.
+  #     length(mask) must equal ncol(mse)
+  # - mass: numeric
+  #     Mass of interest. The closest mass in mse is used.
+  # - tol: numeric. default = 0.5
+  #     A warning is raised if the closest mass in mse is more than tol away from mass.
+  # 
+  # Returns: numeric
+  diff <- Cardinal::mz(mse) - mass
+  mass_idx <- which(abs(diff) == min(abs(diff)))[1]
+  if (min(abs(diff)) > tol) {
+    warning(str_glue("Closest mass in spectra ({Cardinal::mz(mse)[mass_idx]}) is far from desired mass ({mass})."))
+  }
+  signal <- Cardinal::spectra(mse)[mass_idx, mask] %>% mean()
+  noise <-
+    cbind(
+      Cardinal::mz(mse),
+      Cardinal::spectra(mse)[, mask] %>% rowMeans()
+    ) %>%
+    noiseRunMed(mass)
+  return(signal / noise)
+}
+
+normalize_tic_mse <- function(mse) {
+  Cardinal::spectra(mse) <- scale(
+    Cardinal::spectra(mse),
+    center = FALSE,
+    scale = colSums(Cardinal::spectra(mse)) / nrow(mse)
+  )
+  return(mse)
+}
+
+image_mse <- function(mse, mz = NULL, plusminus = 0, fun = colMeans, contrast.enhance = NULL) {
+  # Create heatmap of mass intensity using ggplot2::geom_raster()
+  # 
+  # Args
+  # - mse: Cardinal::MSImagingExperiment
+  # - mz: numeric. default = NULL
+  # - plusminus: numeric. default = 0
+  #     mass range in units of m/z
+  # - fun: callable. default = colMeans
+  #     function to aggregate intensities in the mass range
+  # - contrast.enhance: str. default = NULL
+  #     "histogram" or "suppression" -- see Cardinal::image() documentation
+  # 
+  # Returns: ggplot
+  # - fixed aspect ratio (coord_fixed())
+  # - no grid lines (theme_classic())
+  # - viridis color palette (scale_fill_continuous(type = "viridis"))
+  if (!is.null(mz)) {
+    mass <- mz
+    mse <- Cardinal::filter(mse, mz >= mass - plusminus, mz <= mass + plusminus)
+  }
+  df <- as_tibble(Cardinal::pixelData(mse)) %>% 
+    mutate(intensity = fun(Cardinal::spectra(mse)))
+
+  if (contrast.enhance == "histogram") {
+    df <- mutate(df, intensity = Cardinal:::contrast.enhance.histogram(intensity))
+  } else if (contrast.enhance == "suppression") {
+    df <- mutate(df, intensity = Cardinal:::contrast.enhance.histogram(intensity))
+  }
+
+  g <- df %>% 
+    ggplot(aes(x, y, fill = intensity)) +
+    geom_raster() + 
+    scale_fill_continuous(type = "viridis") +
+    coord_fixed() +
+    theme_classic()
+  return(g)
 }
