@@ -478,6 +478,91 @@ def dfToFasta(df, file=None, close=True, name_col='name', seq_col='seq', header_
             except:
                 pass
 
+def fastqToDf(file, quality=True, reads_keep=None, reads_ignore=None, close=True, truncate_name=False):
+    '''
+    Args
+    - file: str or file object
+        Path to FASTQ file, or file object. Standard compression extensions accepted.
+        Assumes file uses exactly 4 lines per read; sequence and quality strings are not split over multiple lines.
+    - quality: bool. default=True
+        Read quality values
+    - reads_keep: iterable of str. default=None
+        Only keep these read names
+    - reads_ignore: iterable of str. default=None
+        Ignore these read names
+    - close: bool. default=True
+        Only applicable if `file` is a file object. Close file object before returning.
+    - truncate_name: bool. default=False
+        Truncate name of read at first whitespace.
+
+    Returns: pandas.DataFrame or None
+      Rows: FASTQ entries
+      Columns: 'name', 'seq'[, 'quality']
+      Returns None if file could not be parsed correctly
+    '''
+    df = None
+    if reads_keep is not None:
+        reads_keep = set(reads_keep)
+    if reads_ignore is not None:
+        reads_ignore = set(reads_ignore)
+    if isinstance(file, str):
+        assert os.path.exists(file)
+        if file.endswith('.gz'):
+            cat = 'zcat'
+        elif file.endswith('.bz2'):
+            cat = 'bzcat'
+        elif file.endswith('.xz'):
+            cat = 'xzcat'
+        else:
+            cat = 'cat'
+        if quality:
+            awk_prog = r'BEGIN {RS="@"; FS="\n"; OFS="\t"} NR>1 {print $1, $2, $4}'
+        else:
+            awk_prog = r'BEGIN {RS="@"; FS="\n"; OFS="\t"} NR>1 {print $1, $2}'
+        cmd = f'{cat} {file} | awk \'{awk_prog}\''
+        if reads_keep is not None:
+            cmd += f' | grep -E -e \'{"|".join(map(re.escape, reads_keep))}\''
+        if reads_ignore is not None:
+            cmd += f' | grep -E -v -e \'{"|".join(map(re.escape, reads_ignore))}\''
+        df = pd.read_csv(
+            io.StringIO(subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout),
+            sep='\t', header=None, names=['name', 'seq'] + (['quality'] if quality else []))
+    elif isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
+        try:
+            entries = []
+            entry = {}
+            NR = 1
+            for line in file:
+                if NR == 1:
+                    if line[0] != '@':
+                        print('FASTQ file not formatted correctly. Entry name must begin with \'@\'.', file=sys.stderr)
+                        return None
+                    entry['name'] = line[1:].strip()
+                elif NR == 2:
+                    entry['seq'] = line.strip()
+                elif NR == 4:
+                    if quality:
+                        entry['quality'] = line.strip()
+                    if reads_keep is None or entry['name'] in reads_keep:
+                        if reads_ignore is None or entry['name'] not in reads_ignore:
+                            entries.append(entry)
+                    entry = {}
+                    NR = 0
+                NR += 1
+            if NR != 1:
+                print('FASTQ file appears truncated.', file=sys.stderr)
+            df = pd.DataFrame(entries, columns=['name', 'seq'] + (['quality'] if quality else []))
+        finally:
+            if close:
+                try:
+                    file.close()
+                except:
+                    pass
+    if truncate_name:
+        df['name'] = df['name'].str.split('\s', expand=True)[0]
+    return df
+
+
 # endregion --- FASTA tools
 
 # region ------ BED tools
