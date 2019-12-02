@@ -5,6 +5,27 @@ import matplotlib.pyplot as plt
 
 # region --- matplotlib
 
+def label_bar(ax, rects, format_str='{}'):
+    '''
+    Attach a text label above each bar in `rects`, displaying its height.
+
+    Examples
+        rects = ax.bar(x, heights, widths)
+        autolabel(ax, rects)
+
+        ax.bar(x, heights, widths)
+        autolabel(ax, ax.patches)
+
+    Reference: https://matplotlib.org/3.1.1/gallery/lines_bars_and_markers/barchart.html
+    '''
+    for rect in rects:
+        height = rect.get_height()
+        ax.annotate(format_str.format(height),
+                    xy=(rect.get_x() + rect.get_width() / 2, height),
+                    xytext=(0, 3),  # 3 points vertical offset
+                    textcoords='offset points',
+                    ha='center', va='bottom')
+
 def hist_colorbar(values, names, bins=10, colors='viridis', nticks=None,
                   implementation='bar', kwargs=None, colorbar_args=None, ax=None):
     '''
