@@ -527,6 +527,8 @@ def fastqToDf(file, quality=True, reads_keep=None, reads_ignore=None, close=True
         df = pd.read_csv(
             io.StringIO(subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout),
             sep='\t', header=None, names=['name', 'seq'] + (['quality'] if quality else []))
+        if truncate_name and len(df) > 0:
+            df['name'] = df['name'].str.split('\s', expand=True)[0]
     elif isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):
         try:
             entries = []
@@ -538,13 +540,15 @@ def fastqToDf(file, quality=True, reads_keep=None, reads_ignore=None, close=True
                         print('FASTQ file not formatted correctly. Entry name must begin with \'@\'.', file=sys.stderr)
                         return None
                     entry['name'] = line[1:].strip()
+                    if truncate_name:
+                        entry['name'] = entry['name'].split()[0]
                 elif NR == 2:
                     entry['seq'] = line.strip()
                 elif NR == 4:
                     if quality:
                         entry['quality'] = line.strip()
                     if reads_keep is None or entry['name'] in reads_keep:
-                        if reads_ignore is None or entry['name'] not in reads_ignore:
+                        if reads_ignore is None or not entry['name'] in reads_ignore:
                             entries.append(entry)
                     entry = {}
                     NR = 0
@@ -558,8 +562,6 @@ def fastqToDf(file, quality=True, reads_keep=None, reads_ignore=None, close=True
                     file.close()
                 except:
                     pass
-    if truncate_name:
-        df['name'] = df['name'].str.split('\s', expand=True)[0]
     return df
 
 
