@@ -1,7 +1,7 @@
 import numpy as np
 import PIL.Image
 
-def align_lineROI(ref_points, ref_size, img_points, img, bg=None):
+def align_lineROI(ref_points, ref_size, img_points, img, bg=None, resample=PIL.Image.NEAREST):
     '''
     Align 2 images by 2 corresponding points (similarity transform: translation, rotation, and scale).
     
@@ -23,6 +23,8 @@ def align_lineROI(ref_points, ref_size, img_points, img, bg=None):
         Background color used to fill parts of aligned image that are not in the input `img`. If None, defaults to black.
         Value type depends on the mode of the input `img`.
         See https://pillow.readthedocs.io/en/stable/handbook/concepts.html#modes.
+    - resample: int. default=0 (PIL.Image.NEAREST)
+        Resampling method
     
     Returns: PIL.Image.Image. size=ref_size
       Image aligned to reference image with same size.
@@ -36,7 +38,14 @@ def align_lineROI(ref_points, ref_size, img_points, img, bg=None):
     if abs(theta) > np.pi/2:
         raise ValueError(f'The desired rotation ({theta} rad) is beyond pi/2. Please flip the image first if necessary.')
     aligned = img.rotate(-theta * 180 / np.pi, expand=True, fillcolor=bg) # need negative theta to be in image coordinates
-    aligned = aligned.resize(np.ceil(np.array(aligned.size) * scale_factor).astype(int))
+    converted = False
+    if resample != 0 and aligned.mode in (1, 'P'):
+        palette = aligned.getpalette()
+        aligned = aligned.convert(mode='L')
+        converted = True
+    aligned = aligned.resize(np.ceil(np.array(aligned.size) * scale_factor).astype(int), resample=resample)
+    if converted:
+        aligned = aligned.convert(mode='P', palette=palette)
     
     rot_mat = np.array([[np.cos(theta), -np.sin(theta)],
                         [np.sin(theta),  np.cos(theta)]])
