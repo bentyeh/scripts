@@ -29,6 +29,27 @@ def isfloat(s):
         return False
     return True
 
+def wrap_structure(x, structure):
+    '''
+    Enclose object in a data structure if it is not already of that type.
+
+    Args
+    - x: object
+    - structure: str or data structure
+        'list', list, 'tuple', tuple, 'set', or set
+        Raises ValueError if unsupported data structure given.
+
+    Returns: list, tuple, or set
+    '''
+    if structure in ('list', list):
+        return x if type(x) == list else [x]
+    elif structure in ('tuple', tuple):
+        return x if type(x) == tuple else (x,)
+    elif structure in ('set', set):
+        return x if type(x) == set else {x}
+    else:
+        raise ValueError(f'{str(structure)} not supported. Returning original object.')
+
 def get_available_cpus(job_scheduler=None):
     '''
     Get the number of CPUs the current process can use.
@@ -248,8 +269,8 @@ def df_split_row(df, col, sep, keep=False):
         1    a    d   ---------------------------->  1    a    c  ----->
                                                      2    a    d
     A general combine can be performed as follows:
-      df.groupby(list(set(df.columns) - set([col])))
-        .agg(lambda x: sep.join(x))
+      df.groupby(list(set(df.columns) - set([col]))) \
+        .agg(lambda x: sep.join(x)) \
         .reset_index()
     '''
     indexes = list()
@@ -292,10 +313,7 @@ def pandas_apply_parallel(grouped, func, nproc=None, concat_axis=None, **kwargs)
     Based on https://stackoverflow.com/a/29281494
     '''
     if nproc is None:
-        try:
-            nproc = len(os.sched_getaffinity(0))
-        except AttributeError:
-            nproc = os.cpu_count()
+        nproc = get_available_cpus()
 
     with multiprocessing.Pool(nproc) as pool:
         result_dict = {name: pool.apply_async(func, (group,), **kwargs) for name, group in grouped}

@@ -1,13 +1,12 @@
 # add path of this file (e.g., a scripts directory) to sys.path
-import sys, os
+import collections, multiprocessing, os, re, sys, time
 sys.path.append(os.path.dirname(__file__))
 
-import multiprocessing, re, time
 import pandas as pd
 
 import utils, utils_files
 
-def _to_csv(x, col, sep, header, folder_out, ext='', mode='a', **kwargs):
+def _to_csv(x, col, folder_out, ext='', **kwargs):
     '''
     Save DataFrame to file. This function is necessary for shard_df_pandas(),
     since local lambda functions cannot be pickled and used in a multiprocessing
@@ -23,13 +22,12 @@ def _to_csv(x, col, sep, header, folder_out, ext='', mode='a', **kwargs):
         unique key on which `x` was sharded, and {ext} is given by the `ext` argument
     - ext: str. default=''
         Extension of output files, including the period. Compression is inferred.
-    - sep, header, mode, **kwargs:
-        See pandas.to_csv()
+    - **kwargs (sep, header, index, mode, ...):
+        See pandas.DataFrame.to_csv().
     
     Returns: None
     '''
-    x.to_csv(os.path.join(folder_out, x[col].unique()[0] + ext),
-             sep=sep, header=header, index=False, mode=mode, **kwargs)
+    x.to_csv(os.path.join(folder_out, x[col].unique()[0] + ext), **kwargs)
 
 def shard_df_pandas(file_in, folder_out, col, sep, header=None, chunksize=None,
                     nproc=None, ext=None, verbose=True, **kwargs):
@@ -67,7 +65,7 @@ def shard_df_pandas(file_in, folder_out, col, sep, header=None, chunksize=None,
     - Unlike shard_df(), this function writes out a single file per key, rather than multiple files
       per key that have to be concatenated later.
     - The groupby() operation and subsequent iteration over groups is performed by a single process
-      and can therefore by a performance bottleneck. Therefore, a moderate chunksize (e.g., 1e6 or 1e7)
+      and can therefore be a performance bottleneck. Therefore, a moderate chunksize (e.g., 1e6 or 1e7)
       is recommended.
     - Parallelization is achieved in saving grouped dataframes to disk. Each forked process
       occupies the same amount of memory as the main process. Therefore, memory usage can be substantial
@@ -94,19 +92,20 @@ def shard_df_pandas(file_in, folder_out, col, sep, header=None, chunksize=None,
     for chunk in reader:
         grouped = chunk.groupby(col)
         utils.pandas_apply_parallel(
-            grouped, _to_csv, nproc=nproc, concat=False,
-            col=col, sep=sep, header=(nChunks == 0) and (header is not None), folder_out=folder_out,
-            ext=ext, mode='w' if nChunks == 0 else 'a'
-        )
+            grouped, _to_csv, nproc=nproc, concat_axis=None,
+            col=col, folder_out=folder_out, ext=ext,
+            sep=sep, header=(nChunks == 0) and (header is not None),
+            index=False, mode='w' if nChunks == 0 else 'a')
         if verbose:
             nChunks += 1
             nLines = int(nChunks * chunksize)
             elapsed = time.time() - start_time
-            print(f'Lines processed: {nLines}, ' \
-                  f'Time elapsed: {round(elapsed, 2)} s, '\
-                  f'Average speed: {round(nLines/elapsed, 2)} lines/s')
+            print(f'Lines processed: {nLines}',
+                  f'Time elapsed: {elapsed:.2g} s',
+                  f'Average speed: {nLines/elapsed:.2g} lines/s',
+                  sep=', ')
 
-def shard_df(file_in, folder_out, col, sep=None, start=0, end=None, flush=None, ext=None, verbose=True):
+def shard_df(file_in, folder_out, col, start=0, end=None, sep=None, flush=None, ext=None, close=True, verbose=True):
     '''
     Shard a table by keys in a given column.
 
@@ -130,6 +129,8 @@ def shard_df(file_in, folder_out, col, sep=None, start=0, end=None, flush=None, 
     - ext: str. default=None
         Extension of output files, including the period. Compression is inferred.
         If None, automatically detects extension based on `file_in`.
+    - close: bool. default=True
+        Close all file objects pointing to sharded file outputs, even if there is an error.
     - verbose: bool. default=True
         Print out progress
 
@@ -152,6 +153,7 @@ def shard_df(file_in, folder_out, col, sep=None, start=0, end=None, flush=None, 
     # validate arguments
     assert start >= 0 and start <= end
     assert flush is None or flush > 0
+    assert close in (True, False)
     assert os.path.exists(folder_out)
 
     # dictionary of keys -> file objects opened for writing
@@ -168,24 +170,36 @@ def shard_df(file_in, folder_out, col, sep=None, start=0, end=None, flush=None, 
         if verbose:
             start_time = time.time()
 
-        while f.tell() <= end:
-            line = f.readline()
-            key = line.split(sep)[col]
-            files_out.setdefault(key,
-                                 utils_files.createFileObject(os.path.join(folder_out, f'{key}_{start}{ext}'), 'wt')) \
-                     .write(line)
+        try:
+            while f.tell() <= end:
+                line = f.readline()
+                key = line.split(sep)[col]
+                files_out \
+                    .setdefault(
+                        key,
+                        utils_files.createFileObject(os.path.join(folder_out, f'{key}_{start}{ext}'), 'wt')) \
+                    .write(line)
 
-            if flush is not None:
-                nLines += 1
-                if nLines % flush == 0:
-                    for g in files_out.values():
-                        g.flush()
-                    if verbose:
-                        nBytes = f.tell() - start
-                        print(f'Offset: {start}, Bytes processed: {nBytes}, Bytes remaining: {end - start - nBytes}, ' \
-                              f'Lines processed: {nLines}, Lines per second: {nLines/(time.time() - start_time)}')
+                if flush is not None:
+                    nLines += 1
+                    if nLines % flush == 0:
+                        for g in files_out.values():
+                            g.flush()
+                        if verbose:
+                            nBytes = f.tell() - start
+                            print(
+                                f'Offset: {start}',
+                                f'Bytes processed: {nBytes}',
+                                f'Bytes remaining: {end - start - nBytes}',
+                                f'Lines processed: {nLines}',
+                                f'Lines per second: {nLines/(time.time() - start_time):.3g}',
+                                sep=', ')
+        finally:
+            if close:
+                for g in files_out.values():
+                    g.close()
 
-def shard_df_mp(file_in, folder_out, col, nproc=None, shard_size=None, sep=None, flush=None, ext=None, verbose=True):
+def shard_df_mp(file_in, folder_out, col, nproc=None, shard_size=None, **kwargs):
     '''
     Shard a table by keys in a given column. Multiprocessing wrapper around shard_df().
 
@@ -195,6 +209,8 @@ def shard_df_mp(file_in, folder_out, col, nproc=None, shard_size=None, sep=None,
         Number of processes to use. If None, defaults to the number of usable CPUs.
     - shard_size: int. default=None
         Approximate size of each shard in bytes. If None, defaults to size of the file / nproc.
+    - **kwargs (sep, flush, ext, close, verbose):
+        Arguments to shard_df
 
     Returns: None
     '''
@@ -207,6 +223,30 @@ def shard_df_mp(file_in, folder_out, col, nproc=None, shard_size=None, sep=None,
         with multiprocessing.Pool(nproc) as pool:
             for shard_start in range(start, file_size, shard_size):
                 shard_end = shard_start + shard_size
-                pool.apply_async(shard_df, (file_in, folder_out, col, sep, shard_start, shard_end, flush, verbose))
+                pool.apply_async(shard_df, (file_in, folder_out, col, shard_start, shard_end), kwargs)
             pool.close()
             pool.join()
+
+def etree_to_dict(t):
+    '''
+    Convert xml.etree.ElementTree.Element to dictionary.
+    Source: https://stackoverflow.com/a/10077069
+    '''
+    d = {t.tag: {} if t.attrib else None}
+    children = list(t)
+    if children:
+        dd = collections.defaultdict(list)
+        for dc in map(etree_to_dict, children):
+            for k, v in dc.items():
+                dd[k].append(v)
+        d = {t.tag: {k: v[0] if len(v) == 1 else v for k, v in dd.items()}}
+    if t.attrib:
+        d[t.tag].update(('@' + k, v) for k, v in t.attrib.items())
+    if t.text:
+        text = t.text.strip()
+        if children or t.attrib:
+            if text:
+                d[t.tag]['#text'] = text
+        else:
+            d[t.tag] = text
+    return d
