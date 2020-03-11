@@ -404,7 +404,7 @@ def fastaToDf(file, header_prefix='>', headerParser=parseDefaultHeader, keepRawH
     '''
 
     if isinstance(file, str):
-        f = utils_files.createFileObject(file, 'r')
+        f = utils_files.createFileObject(file, 'rt')
     else:
         f = file
         if not isinstance(file, (io.IOBase, tempfile._TemporaryFileWrapper)):

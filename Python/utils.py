@@ -5,6 +5,8 @@ import pandas as pd
 def isint(s):
     '''
     Check if a string represents an int.
+    Note: Numbers in scientific notation (e.g., 1e3) are floats in Python,
+          and `isint('1e3')` will return False.
     Source: https://stackoverflow.com/a/1265696
     '''
     if s[0] in ('-', '+'):
@@ -19,7 +21,7 @@ def isfloat(s):
     - If the string represents an int, this function will still return True.
     - To determine whether a string `s` represents an int or a float, consider the following options:
       1. Use `isint(s)` first, then `isfloat(s)` if the former returns False.
-      2. Use `isfloat()` first, then `s.is_integer()` if the former returns True.
+      2. Use `isfloat()` first, then `float(s).is_integer()` if the former returns True.
 
     Source: https://stackoverflow.com/a/15357477
     '''
