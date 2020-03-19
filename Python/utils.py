@@ -9,6 +9,8 @@ def isint(s):
           and `isint('1e3')` will return False.
     Source: https://stackoverflow.com/a/1265696
     '''
+    if len(s) < 1:
+        return False
     if s[0] in ('-', '+'):
         return s[1:].isdigit()
     return s.isdigit()
