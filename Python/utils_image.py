@@ -1,7 +1,7 @@
 import numpy as np
 import PIL.Image
 
-def align_lineROI(ref_points, ref_size, img_points, img, bg=None, resample=PIL.Image.NEAREST):
+def align_lineROI(ref_points, ref_size, img_points, img, ref_aspect=1, bg=None, resample=PIL.Image.NEAREST, copy=True):
     '''
     Align 2 images by 2 corresponding points (similarity transform: translation, rotation, and scale).
     
@@ -12,23 +12,35 @@ def align_lineROI(ref_points, ref_size, img_points, img, bg=None, resample=PIL.I
         [[x1, x2],
          [y1, y2]]
     - ref_size: 2-tuple of int
-        (width, height)
+        Size of reference image: (width, height)
     - img_points: np.ndarray, shape=(2,2)
         2 points in `img` corresponding to `ref_points`
         [[x1', x2'],
          [y1', y2']]
     - img: PIL.Image.Image
         Image to align to reference.
+    - ref_aspect: float. default=1
+        (inches wide per pixel) / (inches tall per pixel) of reference image, relative to `img`
     - bg: depends. default=None
         Background color used to fill parts of aligned image that are not in the input `img`. If None, defaults to black.
         Value type depends on the mode of the input `img`.
         See https://pillow.readthedocs.io/en/stable/handbook/concepts.html#modes.
-    - resample: int. default=0 (PIL.Image.NEAREST)
-        Resampling method
+    - resample: int. default=PIL.Image.NEAREST
+        Resampling method: PIL.Image.(NEAREST|BOX|BILINEAR|HAMMING|BICUBIC|LANCZOS)
+        See https://pillow.readthedocs.io/en/stable/handbook/concepts.html#filters.
+    - copy: bool. default=True
+        Make a copy of argument objects (e.g., img_points)
     
     Returns: PIL.Image.Image. size=ref_size
       Image aligned to reference image with same size.
     '''
+    if ref_aspect != 1:
+        width, height = img.size
+        img = img.resize((width, round(height * ref_aspect)), resample=PIL.Image.BICUBIC)
+        if copy:
+            img_points = img_points.copy()
+        img_points[1,:] = np.round(img_points[1,:] * ref_aspect)
+
     ref_len = np.sqrt(np.sum((ref_points[:,0] - ref_points[:,1])**2))
     img_len = np.sqrt(np.sum((img_points[:,0] - img_points[:,1])**2))
     scale_factor = ref_len/img_len
