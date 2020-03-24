@@ -1,4 +1,6 @@
 library(tidyverse)
+library(Cardinal)
+library(MALDIquant)
 
 mzR_to_MassSpectrum <- function(spectrum) {
   # Create MALDIquant::MassSpectrum from mzR spectrum
@@ -10,7 +12,6 @@ mzR_to_MassSpectrum <- function(spectrum) {
   #     - Column 2: intensity
   # 
   # Returns: MassSpectrum
-  require(MALDIquant)
   MALDIquant::createMassSpectrum(
     mass = spectrum[,1],
     intensity = spectrum[,2]
@@ -18,25 +19,18 @@ mzR_to_MassSpectrum <- function(spectrum) {
 }
 
 MassSpectrum_to_mzR <- function(MS) {
+  # Create spectrum matrix (column 1 = m/z, column 2 = intensity) from MALDIquant::MassSpectrum
   cbind(MALDIquant::mass(MS), MALDIquant::intensity(MS))
 }
 
 add_colnames <- function(spectrum, names = c("m/z", "count")) {
+  # Add column names to spectrum matrix
   colnames(spectrum) <- names
   return(spectrum)
 }
 
 mzR_to_MSImagingExperiment <- function(spectrum) {
   # Create Cardinal::MSImagingExperiment from mzR spectrum
-  #
-  # Args
-  # - spectrum: matrix
-  #     Mass spectrum, such as that returned by mzR::peaks(mzR_object)
-  #     - Column 1: mass value
-  #     - Column 2: intensity
-  # 
-  # Returns: MSImagingExperiment
-  require(Cardinal)
   Cardinal::MSImagingExperiment(
     imageData = ImageArrayList(matrix(spectrum[,2], nrow = nrow(spectrum), ncol = 1)),
     featureData = MassDataFrame(mz = spectrum[,1]),
@@ -46,15 +40,6 @@ mzR_to_MSImagingExperiment <- function(spectrum) {
 
 mzR_to_MSImageSet <- function(spectrum) {
   # Create Cardinal::MSImageSet from mzR spectrum
-  #
-  # Args
-  # - spectrum: matrix
-  #     Mass spectrum, such as that returned by mzR::peaks(mzR_object)
-  #     - Column 1: mass value
-  #     - Column 2: intensity
-  # 
-  # Returns: MSImageSet
-  require(Cardinal)
   Cardinal::MSImageSet(
     spectra = matrix(spectrum[,2]),
     mz = spectrum[,1]
@@ -81,7 +66,6 @@ getMassPeak <- function(spectrum, mass, tol_ppm = 1e3) {
   # 
   # Returns: vector, numeric of length 2
   #   Row in `spectrum` corresponding to mass peak
-
   tol <- mass * tol_ppm / 1e6
   idx <- which((spectrum[, 1] > mass - tol) & (spectrum[, 1] < mass + tol))
   mass_peak_idx <- idx[which.max(spectrum[idx, 2])]
@@ -112,7 +96,6 @@ noiseRunMed <- function(spectrum, mass, tol_ppm = 1e4, summary = median) {
   # Alternatives
   # - stats::smooth(): Tukey's running median with a window of 3
   # - stats::lowess(): locally-weighted polynomial regression smoother
-
   tol <- mass * tol_ppm/1e6
   idx <- which((spectrum[,1] > mass - tol) &
                (spectrum[,1] < mass + tol))
@@ -218,7 +201,6 @@ calibrate_spectrum <- function(
   # - Arguments inspired by AB/SCIEX 5800 Series Explorer's Processing Method parameters.
   # - Calibration algorithm based on Cardinal::mzAlign(). See
   #   https://rdrr.io/bioc/Cardinal/src/R/process2-mzAlign.R
-
   if (is.null(min_peaks)) {
     min_peaks <- length(ref_masses)
   }
@@ -420,7 +402,6 @@ sliding_distance <- function(v1, v2, norm_fun = "1", range = NULL, verbose = FAL
   # 
   # Returns: numeric. length = range[2] - range[1] + 1. names = range[1]:range[2]
   #   Distance between aligned subsets of vectors v1 and v2 at different offsets.
-
   n <- length(v1)
   stopifnot(n == length(v2))
   if (is.null(range)) {
@@ -464,7 +445,6 @@ align_vectors <- function(...) {
   # n = length(v1)
   # v1_aligned = v1[max(1, offset + 1):min(n + offset, n)]
   # v2_aligned = v2[max(1, 1 - offset):min(n, n - offset)]
-
   d <- sliding_distance(...)
   offsets <- as.integer(names(d)[which(d == min(d))])
   return(offsets[which.min(abs(offsets))])
@@ -516,7 +496,6 @@ aggregate_spectra <- function(spectra_list, agg_fun = median, verbose = TRUE, ..
   #     The callable should take a single vector argument and return a numeric scalar
   # - verbose: logical
   # - ...: arguments to pass to align_spectra()
-
   stopifnot(rlang::is_callable(agg_fun))
 
   aligned_spectra <- align_spectra(spectra_list, ...)
@@ -548,7 +527,6 @@ focusSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm
   # Notes: The arguments min and max take precedence over mass and tol_ppm.
   # 
   # Returns: matrix
-
   if (!is.null(min)) {
     spectrum <- spectrum[spectrum[,1] >= min,]
   }
@@ -601,7 +579,6 @@ plotSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm 
   #   g <- plotSpectrum(spectrum1, mass = 100, plotter = "ggplot", fill = "red", alpha = 0.5)
   #   g <- plotSpectrum(spectrum2, mass = 100, plotter = "ggplot", fill = "blue", alpha = 0.5, overlay = g)
   #   g + guides(alpha = "none", fill = guide_legend(title = "spectra"))
-
   spectrum <- focusSpectrum(spectrum, min, max, mass, tol_ppm)
   xlim <- c(min(spectrum[,1]), max(spectrum[,1]))
 
@@ -710,12 +687,85 @@ snr_mask <- function(mse, mask, mass, tol = 0.5) {
   return(signal / noise)
 }
 
-normalize_tic_mse <- function(mse) {
-  Cardinal::spectra(mse) <- scale(
-    Cardinal::spectra(mse),
-    center = FALSE,
-    scale = colSums(Cardinal::spectra(mse)) / nrow(mse)
+sparse_matc_to_sparse_matr <- function(mat) {
+  stopifnot(is(mat, "sparse_matc"))
+  keys <- mat@data[[1]]
+  values <- mat@data[[2]]
+  keys_all <- mat@keys
+  
+  keys_new <- rep(list(NULL), nrow(mat))
+  values_new <- rep(list(NULL), nrow(mat))
+  keys_all_new <- 1:ncol(mat)
+  
+  for (i in 1:ncol(mat)) {
+    if (i %% 100 == 0) {print(i)}
+    if (is.null(keys_all)) {
+      idx <- match(keys[[i]], keys_all)
+    } else {
+      idx <- keys[[i]]
+    }
+    for (j in 1:length(idx)) {
+      values_new[[idx[j]]] <- c(values_new[[idx[j]]], values[[i]][[j]])
+      keys_new[[idx[j]]] <- c(keys_new[[idx[j]]], i)
+    }
+  }
+  matter::sparse_mat(
+    data = list(keys_new, values_new),
+    nrow = nrow(mat),
+    ncol = ncol(mat),
+    keys = keys_all_new,
+    rowMaj = TRUE
   )
+}
+
+sparse_matc_to_sparseMatrix <- function(mat) {
+  stopifnot(is(mat, "sparse_matc"))
+  keys <- mat@data[[1]]
+  values <- mat@data[[2]]
+  keys_all <- mat@keys
+  
+  total_values <- sum(sapply(values, length))
+  row <- integer(total_values)
+  col <- integer(total_values)
+  x <- numeric(total_values)
+  
+  k <- 1
+  cache <- list()
+  for (i in 1:ncol(mat)) {
+    if (i %% 10 == 0) {print(i)}
+    if (is.null(keys_all)) {
+      idx <- keys[[i]]
+    } else {
+      idx <- sapply(keys[[i]], function(x) which.min(abs(keys_all - x)))
+    }
+    for (j in 1:length(idx)) {
+      row[[k]] <- idx[[j]]
+      col[[k]] <- i
+      x[[k]] <- values[[i]][[j]]
+      k <- k + 1
+    }
+  }
+  Matrix::sparseMatrix(i = row, j = col, x = x, dims = dim(mat), dimnames = dimnames(mat), giveCsparse = TRUE)
+}
+
+normalize_tic_mse <- function(mse) {
+  # Normalize spectra of Cardinal::MSImagingExperiment.
+  # 
+  # Each pixel is normalized such that the TIC for that pixel is nrow(mse),
+  # following what Cardinal::normalize(method = "tic") does.
+  s <- Cardinal::spectra(mse)
+  if (matter::is.sparse(s)) {
+    if (is(s, "sparse_matc")) { # column major order sparse matrix
+      s@data[[2]] <- lapply(X = s@data[[2]], FUN = function(x) {if (sum(x) > 0) {x / sum(x) * nrow(mse)} else {0}})
+      Cardinal::spectra(mse) <- s
+    } else {
+      stop(str_glue("normalize_tic_mse() not implemented for {class(Cardinal::spectra(mse))} matrices."))
+    }
+  } else if (is.matrix(s)) {
+    Cardinal::spectra(mse) <- scale(s, center = FALSE, scale = colSums(s) / nrow(mse))
+  } else {
+    stop(str_glue("normalize_tic_mse() not implemented for {class(Cardinal::spectra(mse))} matrices."))
+  }
   return(mse)
 }
 
