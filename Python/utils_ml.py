@@ -1,5 +1,9 @@
 import numpy as np
 import scipy.optimize
+import statsmodels.api as sm
+import sklearn
+
+# region ------ Functions
 
 def softmax(X):
     '''
@@ -58,7 +62,43 @@ def cross_entropy(pred, y, validate=False, sample_weight=None):
         loss = - np.sum(y * log_pred) / n_samples
     return loss
 
-class logistic_regression:
+# endregion --- Functions
+
+# region ------ Models
+
+class SMWrapper(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
+    '''
+    sklearn-style wrapper for statsmodels regressors.
+    Adapted from https://stackoverflow.com/a/48949667
+    
+    Example (logistic regression):
+        model = SMWrapper(
+            sm.GLM,
+            model_class_kwargs=dict(family=sm.families.Binomial()),
+            fit_kwargs=dict(alpha=0.01, L1_wt=1))
+        model.fit(X, y)
+        pred = model.predict(X, y)
+    '''
+    def __init__(self, model_class, fit_intercept=True, fit_regularized=True, model_class_kwargs=None, fit_kwargs=None):
+        self.model_class = model_class
+        self.fit_intercept = fit_intercept
+        self.fit_regularized = fit_regularized
+        self.model_class_kwargs = dict() if model_class_kwargs is None else model_class_kwargs
+        self.fit_kwargs = dict() if fit_kwargs is None else fit_kwargs
+    def fit(self, X, y):
+        if self.fit_intercept:
+            X = sm.add_constant(X, has_constant='add')
+        self.model_ = self.model_class(y, X, **self.model_class_kwargs)
+        if self.fit_regularized:
+            self.results_ = self.model_.fit_regularized(**self.fit_kwargs)
+        else:
+            self.results_ = self.model_.fit(**self.fit_kwargs)
+    def predict(self, X):
+        if self.fit_intercept:
+            X = sm.add_constant(X, has_constant='add')
+        return self.results_.predict(X)
+
+class logistic_regression(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
     '''
     Logistic regression with soft labels.
     Largely modeled off of scikit-learn's LogisticRegression implementation.
@@ -153,11 +193,3 @@ class logistic_regression:
         if squeeze:
             return np.squeeze(pred[:, 1:])
         return pred
-
-    def get_params(self, deep=True):
-        return {'alpha': self.alpha, 'beta': self.beta}
-
-    def set_params(self, **parameters):
-        for parameter, value in parameters.items():
-            setattr(self, parameter, value)
-        return self
