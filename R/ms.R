@@ -646,6 +646,17 @@ plotSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm 
 }
 
 bin_spectrum <- function(spectrum, decimals = 2, agg_fun = mean) {
+  # Bin spectrum to given decimal precision.
+  # 
+  # Args
+  # - spectrum: matrix
+  #     Mass spectrum, such as that returned by mzR::peaks(mzR_object)
+  #     - Column 1: mass value
+  #     - Column 2: intensity
+  # - decimals: integer. default = 2
+  # - agg_fun: function. default = mean
+  # 
+  # Returns: matrix
   binned_spectrum <- spectrum
   binned_spectrum[,1] <- round(binned_spectrum[,1], decimals)
   colnames(binned_spectrum) <- c("mass", "intensity")
@@ -669,13 +680,14 @@ snr_mask <- function(mse, mask, mass, tol = 0.5) {
   # - mass: numeric
   #     Mass of interest. The closest mass in mse is used.
   # - tol: numeric. default = 0.5
-  #     A warning is raised if the closest mass in mse is more than tol away from mass.
+  #     Return NA if the closest mass in mse is more than tol away from mass.
   # 
   # Returns: numeric
   diff <- Cardinal::mz(mse) - mass
   mass_idx <- which(abs(diff) == min(abs(diff)))[1]
   if (min(abs(diff)) > tol) {
     warning(str_glue("Closest mass in spectra ({Cardinal::mz(mse)[mass_idx]}) is far from desired mass ({mass})."))
+    return(NA_real_)
   }
   signal <- Cardinal::spectra(mse)[mass_idx, mask] %>% mean()
   noise <-
@@ -687,22 +699,30 @@ snr_mask <- function(mse, mask, mass, tol = 0.5) {
   return(signal / noise)
 }
 
-sparse_matc_to_sparse_matr <- function(mat) {
+sparse_matc_to_sparse_matr <- function(mat, verbose = TRUE) {
+  # Convert `matter` matrix from compressed sparse column (CSC) representation to
+  # compressed sparse row (CSR) representation
+  # 
+  # Args
+  # - mat: matter::sparse_matc
+  # - verbose: logical. default = TRUE
+  # 
+  # Returns: matter::sparse_matr
   stopifnot(is(mat, "sparse_matc"))
   keys <- mat@data[[1]]
   values <- mat@data[[2]]
   keys_all <- mat@keys
-  
+
   keys_new <- rep(list(NULL), nrow(mat))
   values_new <- rep(list(NULL), nrow(mat))
   keys_all_new <- 1:ncol(mat)
-  
+
   for (i in 1:ncol(mat)) {
-    if (i %% 100 == 0) {print(i)}
+    if (verbose && i %% 100 == 0) {print(i)}
     if (is.null(keys_all)) {
-      idx <- match(keys[[i]], keys_all)
-    } else {
       idx <- keys[[i]]
+    } else {
+      idx <- match(keys[[i]], keys_all)
     }
     for (j in 1:length(idx)) {
       values_new[[idx[j]]] <- c(values_new[[idx[j]]], values[[i]][[j]])
@@ -710,7 +730,7 @@ sparse_matc_to_sparse_matr <- function(mat) {
     }
   }
   matter::sparse_mat(
-    data = list(keys_new, values_new),
+    data = list(keys = keys_new, values = values_new),
     nrow = nrow(mat),
     ncol = ncol(mat),
     keys = keys_all_new,
@@ -718,21 +738,30 @@ sparse_matc_to_sparse_matr <- function(mat) {
   )
 }
 
-sparse_matc_to_sparseMatrix <- function(mat) {
+sparse_matc_to_sparseMatrix <- function(mat, Csparse = TRUE, verbose = TRUE) {
+  # Convert matter::sparse_matc matrix to Matrix::sparseMatrix
+  # 
+  # Args
+  # - mat: matter::sparse_matc
+  # - Csparse: logical. default = TRUE
+  #     Use compressed sparse column (CSC) representation
+  # - verbose: logical. default = TRUE
+  # 
+  # Returns: Matrix::sparseMatrix
   stopifnot(is(mat, "sparse_matc"))
   keys <- mat@data[[1]]
   values <- mat@data[[2]]
   keys_all <- mat@keys
-  
+
   total_values <- sum(sapply(values, length))
   row <- integer(total_values)
   col <- integer(total_values)
   x <- numeric(total_values)
-  
+
   k <- 1
   cache <- list()
   for (i in 1:ncol(mat)) {
-    if (i %% 10 == 0) {print(i)}
+    if (verbose && i %% 10 == 0) {print(i)}
     if (is.null(keys_all)) {
       idx <- keys[[i]]
     } else {
@@ -748,21 +777,29 @@ sparse_matc_to_sparseMatrix <- function(mat) {
   Matrix::sparseMatrix(i = row, j = col, x = x, dims = dim(mat), dimnames = dimnames(mat), giveCsparse = TRUE)
 }
 
-normalize_tic_mse <- function(mse) {
+normalize_tic_mse <- function(mse, tic = NULL) {
   # Normalize spectra of Cardinal::MSImagingExperiment.
   # 
-  # Each pixel is normalized such that the TIC for that pixel is nrow(mse),
-  # following what Cardinal::normalize(method = "tic") does.
+  # Args
+  # - mse: Cardinal::MSImagingExperiment
+  # - tic: numeric. default = NULL
+  #     The value to which to normalize the total ion current.
+  #     Defaults to the number of unique masses in the dataset.
+  # 
+  # Returns: Cardinal::MSImagingExperiment
+  if (is.null(tic)) {
+    tic <- nrow(mse)
+  }
   s <- Cardinal::spectra(mse)
   if (matter::is.sparse(s)) {
     if (is(s, "sparse_matc")) { # column major order sparse matrix
-      s@data[[2]] <- lapply(X = s@data[[2]], FUN = function(x) {if (sum(x) > 0) {x / sum(x) * nrow(mse)} else {0}})
+      s@data[[2]] <- lapply(X = s@data[[2]], FUN = function(x) {if (sum(x) > 0) {x / sum(x) * tic} else {0}})
       Cardinal::spectra(mse) <- s
     } else {
       stop(str_glue("normalize_tic_mse() not implemented for {class(Cardinal::spectra(mse))} matrices."))
     }
   } else if (is.matrix(s)) {
-    Cardinal::spectra(mse) <- scale(s, center = FALSE, scale = colSums(s) / nrow(mse))
+    Cardinal::spectra(mse) <- scale(s, center = FALSE, scale = colSums(s) / tic)
   } else {
     stop(str_glue("normalize_tic_mse() not implemented for {class(Cardinal::spectra(mse))} matrices."))
   }
