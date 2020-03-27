@@ -103,9 +103,7 @@ class logistic_regression(sklearn.base.BaseEstimator, sklearn.base.RegressorMixi
     Logistic regression with soft labels.
     Largely modeled off of scikit-learn's LogisticRegression implementation.
     '''
-    def __init__(self, alpha=0.001, beta=0, bias=True, method='L-BFGS-B', optim_kwargs=None, rng=None):
-        if rng is None:
-            rng = np.random.default_rng()
+    def __init__(self, alpha=0.001, beta=0, bias=True, method='L-BFGS-B', optim_kwargs=None, rng=None, output='reg'):
         if optim_kwargs is None:
             optim_kwargs = {}
         self.alpha = alpha
@@ -114,6 +112,7 @@ class logistic_regression(sklearn.base.BaseEstimator, sklearn.base.RegressorMixi
         self.method = method
         self.optim_kwargs = optim_kwargs
         self.rng = rng
+        self.output = output
 
     def fit(self, X, y, sample_weight=None, weights0=None, **kwargs):
         assert X.shape[0] == y.shape[0]
@@ -127,7 +126,10 @@ class logistic_regression(sklearn.base.BaseEstimator, sklearn.base.RegressorMixi
             n_classes = y.shape[1]
         
         if weights0 is None:
-            weights0 = self.rng.random((n_classes - 1, n_features))
+            if self.rng is None:
+                weights0 = np.ones((n_classes - 1, n_features))
+            else:
+                weights0 = self.rng.random((n_classes - 1, n_features))
 
         self.result_ = scipy.optimize.minimize(
             self._loss,
@@ -190,6 +192,8 @@ class logistic_regression(sklearn.base.BaseEstimator, sklearn.base.RegressorMixi
             X = np.hstack((np.ones((X.shape[0], 1)), X))
         n_samples = X.shape[0]
         pred = softmax(np.hstack((np.zeros((n_samples, 1)), X @ self.w_.T)))
+        if self.output == 'class':
+            return np.argmax(pred, axis=1)
         if squeeze:
-            return np.squeeze(pred[:, 1:])
+            pred = np.squeeze(pred[:, 1:])
         return pred
