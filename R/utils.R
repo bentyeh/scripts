@@ -1,4 +1,19 @@
-arrayToDf = function(ar) {
+# Wait on child processes
+tryCatch(
+  {
+    wait <- Rcpp::cppFunction(
+      "void wait() {int wstat; while (waitpid(-1, &wstat, WNOHANG) > 0) {};}",
+      includes = "#include <sys/wait.h>"
+    )
+  },
+  error = function(e) {
+    e
+    message("Rcpp may not be installed.")
+  },
+  NULL
+)
+
+arrayToDf <- function(ar) {
   # Convert an array to a data frame.
   # 
   # Args
@@ -17,10 +32,10 @@ arrayToDf = function(ar) {
   # References
   # - as.data.frame.table()
   # - https://stackoverflow.com/a/42810479
-  
+
   dims = dim(ar)
   ndims = length(dims)
-  
+
   if (is.null(dimnames(ar))) {
     nullDims = 1:ndims
     nullDimNames = 1:ndims
@@ -33,14 +48,14 @@ arrayToDf = function(ar) {
     }
   }
   namedDims = setdiff(1:ndims, nullDims)
-  
+
   df = as.data.frame.table(ar)
   df[namedDims] = lapply(df[namedDims], as.character)
   df[nullDims] = lapply(df[nullDims], as.numeric)
-  
+
   colnames(df)[nullDimNames] = paste0('d', nullDimNames)
   colnames(df)[ncol(df)] = 'value'
-  
+
   return(df)
 }
 
@@ -63,12 +78,12 @@ dfToArray <- function(df, dimOrders = NULL) {
   # References
   # - https://stackoverflow.com/a/9617424
   # - https://stackoverflow.com/a/46129338
-  
+
   nDim = ncol(df) - 1
   stopifnot(is.null(dimOrders) || !is.null(names(dimOrders)) || length(dimOrders) == nDim)
-  
+
   df = unique(df)
-  
+
   # convert columns in df to factors
   if (is.null(dimOrders) || !is.null(names(dimOrders))) {
     namedCols = intersect(names(df[1:nDim]), names(dimOrders))
@@ -84,14 +99,14 @@ dfToArray <- function(df, dimOrders = NULL) {
       df[[c]] = factor(df[[c]], levels = dimOrders[[c]])
     }
   }
-  
+
   # initialize array
   ar = array(dim = sapply(df[1:nDim], function(c) length(levels(c))),
              dimnames = sapply(df[1:nDim], levels))
-  
+
   # input values into array
   ar[do.call(cbind, df[1:nDim])] = df[[nDim + 1]]
-  
+
   return(ar)
 }
 
@@ -139,7 +154,7 @@ orderArray <- function(ar, dims = NULL, metric = 'cor') {
 
     # flatten each hyperplane in dimension d into a row vector
     for (value in 1:nValues) {
-      mat[value,] = as.vector(indexArray(ar, d, value))
+      mat[value, ] = as.vector(indexArray(ar, d, value))
     }
 
     if (metric == 'cor') {
@@ -152,7 +167,7 @@ orderArray <- function(ar, dims = NULL, metric = 'cor') {
     dimOrder[[d]] = hclust(distMat)$order
     # alternatively, order.dendrogram(as.dendrogram(hclust(distMat)))
   }
-  
+
   # maintain original orders for other dims
   unOrderedDims = setdiff(1:nDims, dims)
   dimOrder[unOrderedDims] = lapply(unOrderedDims, function(x) 1:(dim(ar)[x]))
@@ -163,10 +178,10 @@ orderArray <- function(ar, dims = NULL, metric = 'cor') {
 indexArray <- function(x, dim, value, drop = FALSE, verbose = FALSE) {
   # Select along one dimension in multidimensional array
   # 
-  # Examples: Let A = array(data=1:24, dim=c(2,3,4), dimnames=list(c('x1','x2'),c('y1','y2'),NULL)).
-  # - indexArray(A, 1, 1) == A[1,,]
-  # - indexArray(A, 1, 2) == A[2,,]
-  # - indexArray(A, 2, 3) == A[,3,]
+  # Examples: Let A = array(data=1:24, dim=c(2, 3, 4), dimnames=list(c('x1', 'x2'), c('y1', 'y2'), NULL)).
+  # - indexArray(A, 1, 1) == A[1, , ]
+  # - indexArray(A, 1, 2) == A[2, , ]
+  # - indexArray(A, 2, 3) == A[, 3, ]
   # 
   # Args
   # - x: array
@@ -193,10 +208,10 @@ indexArray <- function(x, dim, value, drop = FALSE, verbose = FALSE) {
     list(as.name("["), quote(x)),
     indices,
     list(drop = drop)))
-  
+
   if (verbose) {
     print(call)
   }
-  
+
   eval(call)
 }
