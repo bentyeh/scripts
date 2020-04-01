@@ -93,6 +93,7 @@ class SMWrapper(sklearn.base.BaseEstimator, sklearn.base.RegressorMixin):
             self.results_ = self.model_.fit_regularized(**self.fit_kwargs)
         else:
             self.results_ = self.model_.fit(**self.fit_kwargs)
+        return self
     def predict(self, X):
         if self.fit_intercept:
             X = sm.add_constant(X, has_constant='add')
@@ -147,6 +148,7 @@ class logistic_regression(sklearn.base.BaseEstimator, sklearn.base.RegressorMixi
         else:
             self.coef_ = self.w_.copy()
             self.intercept_ = 0
+        return self
 
     def _loss(self, weights, X, y, sample_weight):
         '''
