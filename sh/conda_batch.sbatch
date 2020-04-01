@@ -5,5 +5,5 @@ SCRIPT="$2"
 shift 2
 
 source ~/.bashrc
-conda activate $ENV
-"$SCRIPT" $@
+conda activate "$ENV"
+"$SCRIPT" "$@"

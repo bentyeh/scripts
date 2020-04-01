@@ -3,4 +3,4 @@
 SCRIPT="$1"
 shift
 source ~/.bashrc
-"$SCRIPT" $@
+"$SCRIPT" "$@"
