@@ -13,8 +13,8 @@ mzR_to_MassSpectrum <- function(spectrum) {
   # 
   # Returns: MassSpectrum
   MALDIquant::createMassSpectrum(
-    mass = spectrum[,1],
-    intensity = spectrum[,2]
+    mass = spectrum[, 1],
+    intensity = spectrum[, 2]
   )
 }
 
@@ -32,8 +32,8 @@ add_colnames <- function(spectrum, names = c("m/z", "count")) {
 mzR_to_MSImagingExperiment <- function(spectrum) {
   # Create Cardinal::MSImagingExperiment from mzR spectrum
   Cardinal::MSImagingExperiment(
-    imageData = ImageArrayList(matrix(spectrum[,2], nrow = nrow(spectrum), ncol = 1)),
-    featureData = MassDataFrame(mz = spectrum[,1]),
+    imageData = ImageArrayList(matrix(spectrum[, 2], nrow = nrow(spectrum), ncol = 1)),
+    featureData = MassDataFrame(mz = spectrum[, 1]),
     pixelData = PositionDataFrame(coord = expand.grid(x = 1, y = 1))
   )
 }
@@ -41,8 +41,8 @@ mzR_to_MSImagingExperiment <- function(spectrum) {
 mzR_to_MSImageSet <- function(spectrum) {
   # Create Cardinal::MSImageSet from mzR spectrum
   Cardinal::MSImageSet(
-    spectra = matrix(spectrum[,2]),
-    mz = spectrum[,1]
+    spectra = matrix(spectrum[, 2]),
+    mz = spectrum[, 1]
   )
 }
 
@@ -97,8 +97,8 @@ noiseRunMed <- function(spectrum, mass, tol_ppm = 1e4, summary = median) {
   # - stats::smooth(): Tukey's running median with a window of 3
   # - stats::lowess(): locally-weighted polynomial regression smoother
   tol <- mass * tol_ppm/1e6
-  idx <- which((spectrum[,1] > mass - tol) &
-               (spectrum[,1] < mass + tol))
+  idx <- which((spectrum[, 1] > mass - tol) &
+               (spectrum[, 1] < mass + tol))
   avg_resolution <- 2 * tol / length(idx)
   width <- ceiling(tol/avg_resolution)
   if (width %% 2 == 0) {
@@ -259,7 +259,7 @@ calibrate_spectrum <- function(
     )[[noise_method_fun]]
     noise_all <- noise_method_fun(spectrum[, 2])
     for (i in 1:n) {
-      noise[i] <- noise_all[spectrum[,1] == peaks[i, 1]]
+      noise[i] <- noise_all[spectrum[, 1] == peaks[i, 1]]
     }
   }
   snr <- peaks[, 2] / noise
@@ -344,7 +344,7 @@ calibrate_spectrum <- function(
   df[["residuals_uncalibrated"]] <- NA_real_
   df[["residuals_uncalibrated"]][detected_peaks] <- peaks[, 1] - ref_masses
   df[["residuals_calibrated"]] <- NA_real_
-  df[["residuals_calibrated"]][detected_peaks] <- warp(peaks[,1]) - ref_masses
+  df[["residuals_calibrated"]][detected_peaks] <- warp(peaks[, 1]) - ref_masses
   if (n_detected_peaks > 0) {
     mse_uncal <- sum(df[["residuals_uncalibrated"]] ^ 2, na.rm = TRUE) / n_detected_peaks
     mse_cal <- sum(df[["residuals_calibrated"]] ^ 2, na.rm = TRUE) / n_detected_peaks
@@ -473,7 +473,7 @@ align_spectra <- function(spectra_list, trim = TRUE, ...) {
     0,
     purrr::map_int(
       spectra_list[2:length(spectra_list)],
-      function(x, ...) align_vectors(x[,1], spectra_list[[1]][,1], ...),
+      function(x, ...) align_vectors(x[, 1], spectra_list[[1]][, 1], ...),
       ...
     )
   )
@@ -481,8 +481,8 @@ align_spectra <- function(spectra_list, trim = TRUE, ...) {
     max_offset <- max(offsets, 0)
     min_offset <- min(offsets, 0)
     for (i in seq_along(spectra_list)) {
-      # spectra_list[[i]] = spectra_list[[i]][max(1, offsets[i] + 1):min(n + offsets[i], n),]
-      spectra_list[[i]] = spectra_list[[i]][(max_offset - offsets[i] + 1):(n - offsets[i] + min_offset),]
+      # spectra_list[[i]] = spectra_list[[i]][max(1, offsets[i] + 1):min(n + offsets[i], n), ]
+      spectra_list[[i]] = spectra_list[[i]][(max_offset - offsets[i] + 1):(n - offsets[i] + min_offset), ]
     }
   }
   return(spectra_list)
@@ -500,9 +500,9 @@ aggregate_spectra <- function(spectra_list, agg_fun = median, verbose = TRUE, ..
 
   aligned_spectra <- align_spectra(spectra_list, ...)
   stopifnot(identical(purrr::map_int(aligned_spectra, nrow) %>% unique() %>% length(), 1L))
-  masses <- purrr::map(aligned_spectra, ~ .x[,1]) %>%
+  masses <- purrr::map(aligned_spectra, ~ .x[, 1]) %>%
     purrr::pmap_dbl(function(...) agg_fun(c(...)))
-  intensities <- purrr::map(aligned_spectra, ~ .x[,2]) %>%
+  intensities <- purrr::map(aligned_spectra, ~ .x[, 2]) %>%
     purrr::pmap_dbl(function(...) agg_fun(c(...)))
   return(unname(cbind(masses, intensities)))
 }
@@ -528,18 +528,18 @@ focusSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm
   # 
   # Returns: matrix
   if (!is.null(min)) {
-    spectrum <- spectrum[spectrum[,1] >= min,]
+    spectrum <- spectrum[spectrum[, 1] >= min, ]
   }
 
   if (!is.null(max)) {
-    spectrum <- spectrum[spectrum[,1] <= max,]
+    spectrum <- spectrum[spectrum[, 1] <= max, ]
   }
 
   if (is.null(min) && is.null(max) && !is.null(mass)) {
     tol <- mass * tol_ppm/1e6
-    idx <- which((spectrum[,1] > mass - tol) &
-                   (spectrum[,1] < mass + tol))
-    spectrum <- spectrum[idx,]
+    idx <- which((spectrum[, 1] > mass - tol) &
+                   (spectrum[, 1] < mass + tol))
+    spectrum <- spectrum[idx, ]
   }
 
   return(spectrum)
@@ -580,7 +580,7 @@ plotSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm 
   #   g <- plotSpectrum(spectrum2, mass = 100, plotter = "ggplot", fill = "blue", alpha = 0.5, overlay = g)
   #   g + guides(alpha = "none", fill = guide_legend(title = "spectra"))
   spectrum <- focusSpectrum(spectrum, min, max, mass, tol_ppm)
-  xlim <- c(min(spectrum[,1]), max(spectrum[,1]))
+  xlim <- c(min(spectrum[, 1]), max(spectrum[, 1]))
 
   # default parameters
   default_args <- list(
@@ -589,7 +589,7 @@ plotSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm 
     main = NULL,
     type = "h", # 'histogram' like vertical lines,
     xlim = xlim,
-    ylim = c(0, max(spectrum[,2])),
+    ylim = c(0, max(spectrum[, 2])),
     yaxs = "i", # tightly fit axis to data range
     xaxs = "i", # tightly fit axis to data range
     bty = "l"   # draw only the left and bottom axes lines
@@ -600,8 +600,8 @@ plotSpectrum <- function(spectrum, min = NULL, max = NULL, mass = NULL, tol_ppm 
   default_args_to_use <- names(default_args)[!names(default_args) %in% names(args)]
   args[default_args_to_use] <- default_args[default_args_to_use]
 
-  args[["x"]] <- spectrum[,1]
-  args[["y"]] <- spectrum[,2]
+  args[["x"]] <- spectrum[, 1]
+  args[["y"]] <- spectrum[, 2]
 
   if (identical(show_noise, TRUE)) {
     if (is.null(min) && is.null(max) && !is.null(mass)) {
@@ -658,7 +658,7 @@ bin_spectrum <- function(spectrum, decimals = 2, agg_fun = mean) {
   # 
   # Returns: matrix
   binned_spectrum <- spectrum
-  binned_spectrum[,1] <- round(binned_spectrum[,1], decimals)
+  binned_spectrum[, 1] <- round(binned_spectrum[, 1], decimals)
   colnames(binned_spectrum) <- c("mass", "intensity")
   binned_spectrum <- binned_spectrum %>%
     as_tibble() %>% 
@@ -667,36 +667,6 @@ bin_spectrum <- function(spectrum, decimals = 2, agg_fun = mean) {
     as.matrix()
   colnames(binned_spectrum) <- colnames(spectrum)
   return(binned_spectrum)
-}
-
-snr_mask <- function(mse, mask, mass, tol = 0.5) {
-  # Signal to noise ratio of mean intensities over all pixels in the mask at the specified mass
-  # 
-  # Args
-  # - mse: MSImagingExperiment
-  # - mask: vector, logical or integer
-  #     Logical or index (integer) mask of pixels.
-  #     length(mask) must equal ncol(mse)
-  # - mass: numeric
-  #     Mass of interest. The closest mass in mse is used.
-  # - tol: numeric. default = 0.5
-  #     Return NA if the closest mass in mse is more than tol away from mass.
-  # 
-  # Returns: numeric
-  diff <- Cardinal::mz(mse) - mass
-  mass_idx <- which(abs(diff) == min(abs(diff)))[1]
-  if (min(abs(diff)) > tol) {
-    warning(str_glue("Closest mass in spectra ({Cardinal::mz(mse)[mass_idx]}) is far from desired mass ({mass})."))
-    return(NA_real_)
-  }
-  signal <- Cardinal::spectra(mse)[mass_idx, mask] %>% mean()
-  noise <-
-    cbind(
-      Cardinal::mz(mse),
-      Cardinal::spectra(mse)[, mask] %>% rowMeans()
-    ) %>%
-    noiseRunMed(mass)
-  return(signal / noise)
 }
 
 sparse_matc_to_sparse_matr <- function(mat, verbose = TRUE) {
@@ -775,72 +745,4 @@ sparse_matc_to_sparseMatrix <- function(mat, Csparse = TRUE, verbose = TRUE) {
     }
   }
   Matrix::sparseMatrix(i = row, j = col, x = x, dims = dim(mat), dimnames = dimnames(mat), giveCsparse = TRUE)
-}
-
-normalize_tic_mse <- function(mse, tic = NULL) {
-  # Normalize spectra of Cardinal::MSImagingExperiment.
-  # 
-  # Args
-  # - mse: Cardinal::MSImagingExperiment
-  # - tic: numeric. default = NULL
-  #     The value to which to normalize the total ion current.
-  #     Defaults to the number of unique masses in the dataset.
-  # 
-  # Returns: Cardinal::MSImagingExperiment
-  if (is.null(tic)) {
-    tic <- nrow(mse)
-  }
-  s <- Cardinal::spectra(mse)
-  if (matter::is.sparse(s)) {
-    if (is(s, "sparse_matc")) { # column major order sparse matrix
-      s@data[[2]] <- lapply(X = s@data[[2]], FUN = function(x) {if (sum(x) > 0) {x / sum(x) * tic} else {0}})
-      Cardinal::spectra(mse) <- s
-    } else {
-      stop(str_glue("normalize_tic_mse() not implemented for {class(Cardinal::spectra(mse))} matrices."))
-    }
-  } else if (is.matrix(s)) {
-    Cardinal::spectra(mse) <- scale(s, center = FALSE, scale = colSums(s) / tic)
-  } else {
-    stop(str_glue("normalize_tic_mse() not implemented for {class(Cardinal::spectra(mse))} matrices."))
-  }
-  return(mse)
-}
-
-image_mse <- function(mse, mz = NULL, plusminus = 0, fun = colMeans, contrast.enhance = NULL) {
-  # Create heatmap of mass intensity using ggplot2::geom_raster()
-  # 
-  # Args
-  # - mse: Cardinal::MSImagingExperiment
-  # - mz: numeric. default = NULL
-  # - plusminus: numeric. default = 0
-  #     mass range in units of m/z
-  # - fun: callable. default = colMeans
-  #     function to aggregate intensities in the mass range
-  # - contrast.enhance: str. default = NULL
-  #     "histogram" or "suppression" -- see Cardinal::image() documentation
-  # 
-  # Returns: ggplot
-  # - fixed aspect ratio (coord_fixed())
-  # - no grid lines (theme_classic())
-  # - viridis color palette (scale_fill_continuous(type = "viridis"))
-  if (!is.null(mz)) {
-    mass <- mz
-    mse <- Cardinal::filter(mse, mz >= mass - plusminus, mz <= mass + plusminus)
-  }
-  df <- as_tibble(Cardinal::pixelData(mse)) %>% 
-    mutate(intensity = fun(Cardinal::spectra(mse)))
-
-  if (contrast.enhance == "histogram") {
-    df <- mutate(df, intensity = Cardinal:::contrast.enhance.histogram(intensity))
-  } else if (contrast.enhance == "suppression") {
-    df <- mutate(df, intensity = Cardinal:::contrast.enhance.histogram(intensity))
-  }
-
-  g <- df %>% 
-    ggplot(aes(x, y, fill = intensity)) +
-    geom_raster() + 
-    scale_fill_continuous(type = "viridis") +
-    coord_fixed() +
-    theme_classic()
-  return(g)
 }
