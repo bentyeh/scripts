@@ -2,6 +2,18 @@ library(tidyverse)
 library(Cardinal)
 library(MALDIquant)
 
+# region ------ Helper functions
+
+add_colnames <- function(spectrum, names = c("m/z", "count")) {
+  # Add column names to spectrum matrix
+  colnames(spectrum) <- names
+  return(spectrum)
+}
+
+# endregion --- Helper functions
+
+# region ------ Convert between classes / formats
+
 mzR_to_MassSpectrum <- function(spectrum) {
   # Create MALDIquant::MassSpectrum from mzR spectrum
   #
@@ -23,12 +35,6 @@ MassSpectrum_to_mzR <- function(MS) {
   cbind(MALDIquant::mass(MS), MALDIquant::intensity(MS))
 }
 
-add_colnames <- function(spectrum, names = c("m/z", "count")) {
-  # Add column names to spectrum matrix
-  colnames(spectrum) <- names
-  return(spectrum)
-}
-
 mzR_to_MSImagingExperiment <- function(spectrum) {
   # Create Cardinal::MSImagingExperiment from mzR spectrum
   Cardinal::MSImagingExperiment(
@@ -44,6 +50,58 @@ mzR_to_MSImageSet <- function(spectrum) {
     spectra = matrix(spectrum[, 2]),
     mz = spectrum[, 1]
   )
+}
+
+Cardinal_to_MALDIquant <- function(mse) {
+  mq <- vector("list", length = ncol(mse))
+  metadata <- Cardinal::msiInfo(mse)
+  polarity <- Cardinal::scanPolarity(metadata)
+  file <- metadata@metadata$files[[1]]
+  n_x <- metadata@metadata$`max count of pixels x`
+  n_y <- metadata@metadata$`max count of pixels y`
+  for (i in 1:ncol(mse)) {
+    mq[[i]] <- MALDIquant::createMassSpectrum(
+      mass = Cardinal::mzData(mse)[[i]],
+      intensity = Cardinal::intensityData(mse)[[i]],
+      metaData = list(
+        imaging = list(size = c(x = n_x, y = n_y), pos = c(x = Cardinal::coord(mse)[i, "x"], y = Cardinal::coord(mse)[i, "y"])),
+        numberInFile = i,
+        polarity = polarity,
+        file = file
+      )
+    )
+  }
+  invisible(mq)
+}
+
+# TODO
+# MALDIquant_to_Cardinal <- function(mq) {
+# }
+
+# endregion --- Convert between classes / formats
+
+# region ------ Spectrum info
+
+# TODO
+estimate_resolution <- function(spectrum, peaks = NULL) {
+  if (is.null(peaks)) {
+    peaks <- MALDIquant::detectPeaks(mzR_to_MassSpectrum(spectrum))
+  }
+}
+
+# endregion --- Spectrum info
+
+# region ------ Spectrum processing
+
+# TODO
+bin_peaks <- function(spectrum, peaks) {
+
+}
+
+# endregion --- Spectrum processing
+
+MALDIquant_coords <- function(mq) {
+  map_dfr(mq, function(l) as.list(metaData(l)$imaging$pos))
 }
 
 normalize_tic <- function(spectrum) {
@@ -745,4 +803,58 @@ sparse_matc_to_sparseMatrix <- function(mat, Csparse = TRUE, verbose = TRUE) {
     }
   }
   Matrix::sparseMatrix(i = row, j = col, x = x, dims = dim(mat), dimnames = dimnames(mat), giveCsparse = TRUE)
+}
+
+smooth_spectrum <- function(spectrum, resolution, ref = NULL, window = 100, units = "ppm") {
+  # Smooth spectrum using Gaussian kernel.
+  # 
+  # Args
+  # - spectrum: matrix
+  #     Mass spectrum, such as that returned by mzR::peaks(mzR_object)
+  #     - Column 1: mass value
+  #     - Column 2: intensity
+  # - resolution: numeric
+  #     Resolution at FWHM. See https://en.wikipedia.org/wiki/Resolution_(mass_spectrometry)
+  # - ref: vector, numeric. default = NULL
+  #     Output m/z values. The intensities at these values are computed based on a weighted
+  #     average of the original spectrum, where the weights are given by a Gaussian distribution.
+  # - window: numeric. default = 100
+  #     Window around `ref` values in which to limit the weighted average.
+  # - units: character. default = "ppm"
+  #     Units for `window`. "ppm" or "Da"
+  stopifnot(units %in% c("ppm", "Da"))
+  if (is.null(ref)) {
+    ref <- spectrum[, 1]
+  }
+  stopifnot(length(resolution) %in% c(1, length(ref)))
+  sd <- ref / (resolution * 2 * sqrt(2 * log(2)))
+  masses <- spectrum[, 1]
+
+  spectrum_new <- matrix(data = 0, nrow = length(ref), ncol = 2)
+  spectrum_new[, 1] <- ref
+
+  # Using a sparse matrix implementation, which is currently slower than the for-loop
+  # weights <- Matrix::Matrix(data = 0, nrow = length(ref), ncol = length(masses), sparse = TRUE)
+  # for (i in 1:length(ref)) {
+  #   # if (units == "ppm") {
+  #     # idxs <- which(abs(masses - ref[[i]]) / ref[[i]] * 1e6 <= window)
+  #   # } else {
+  #     idxs <- which(abs(masses - ref[[i]]) <= window)
+  #   # }
+  #   weights[i, idxs] <- dnorm(masses[idxs], mean = ref[[i]], sd = sd[[i]])
+  # }
+  # weights <- weights / Matrix::rowSums(weights)
+  # spectrum_new[, 2] <- as.numeric(weights %*% spectrum[, 2])
+
+  for (i in 1:length(ref)) {
+    if (units == "ppm") {
+      idxs <- which(abs(masses - ref[[i]]) / ref[[i]] * 1e6 <= window)
+    } else {
+      idxs <- which(abs(masses - ref[[i]]) <= window)
+    }
+    weights <- dnorm(masses[idxs], mean = ref[[i]], sd = sd[[i]])
+    weights <- weights / sum(weights) # normalize weights
+    spectrum_new[i, 2] <- sum(weights * spectrum[idxs, 2])
+  }
+  return(spectrum_new)
 }
