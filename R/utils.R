@@ -1,3 +1,12 @@
+quiet <- function(x) {
+  # Evaluate an object or expression while suppressing output
+  # Credit: Hadley Wickham
+  # Source: https://r.789695.n4.nabble.com/Suppressing-output-e-g-from-cat-td859876.html
+  sink(tempfile())
+  on.exit(sink())
+  invisible(force(x))
+}
+
 # Wait on child processes
 tryCatch(
   {
