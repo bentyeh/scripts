@@ -1755,6 +1755,124 @@ def multisearch_NCBIGene(terms, nproc=None, **kwargs):
 
 IDT_URL = 'https://www.idtdna.com'
 
+def IDT_OligoAnalyzer(seq1, seq2=None, return_full=False):
+    '''
+    Submit sequences to IDT OligoAnalyzer.
+    See https://www.idtdna.com/calc/analyzer (requires login).
+
+    Args
+    - seq1: str
+        Nucleic acid sequence (e.g., forward primer)
+    - seq2: str. default=None
+        Nucleic acid sequence (e.g., reverse primer)
+    - return_full: bool. default=False
+        Return full JSON response as dict.
+
+    Returns: dict
+      If `return_full`: dict representing decoded JSON results
+      Otherwise, a dict (str -> float):
+        melt_temp: melt temperature (Celcius)
+        molecular_weight: molecular weight (g/mol)
+        extinction_coefficient: extinction coefficient (L/mol/cm)
+        max_hairpin_G: smallest (i.e., most negative) ΔG (kcal/mol) of predicted hairpins
+        max_homodimer_G': smallest (i.e., most negative) ΔG (kcal/mol) of homodimers (self-dimers)
+        max_heterodimer_G': smallest (i.e., most negative) ΔG (kcal/mol) of seq1-seq2 heterodimer
+          If seq2 is not provided, this value is None.
+    '''
+    with requests.Session() as s:
+        # visit IDT
+        r_idt = s.get(IDT_URL)
+        if not r_idt.ok:
+            r_idt.raise_for_status()
+
+        # login to IDT - account found via http://bugmenot.com/view/idtdna.com
+        url_login = 'https://www.idtdna.com/site/Account/Login/Gatekeeper'
+        data_login = {'UserName': 'ev376821', 'Password': 'evan1234', 'RememberMe': 'true'}
+        r_login = s.post(url_login, data=data_login)
+        if not r_login.ok:
+            r_login.raise_for_status()
+
+        # defaults
+        headers = {
+            'origin': 'https://www.idtdna.com',
+            'referer': 'https://www.idtdna.com/calc/analyzer'}
+
+        # analyze
+        url_analyze = 'https://www.idtdna.com/api/OligoAnalyzer/Analyze'
+        data_analyze = {
+            "Sequence": seq1,
+            "NaConc": 50,
+            "MgConc": 0,
+            "DNTPsConc": 0,
+            "OligoConc": 0.25,
+            "NucleotideType": "DNA"}
+        r_analyze = s.post(url_analyze, json=data_analyze, headers=headers)
+        if not r_analyze.ok:
+            r_analyze.raise_for_status()
+        result_analyze = json.loads(r_analyze.text)
+
+        # hairpin
+        url_hairpin = 'https://www.idtdna.com/calc/analyzer/home/hairpin'
+        data_hairpin = {
+            'hairpinSettings': {
+                "SequenceType": "Linear",
+                "MaxFoldings": 20,
+                "StartPos": 0,
+                "StopPos": 0,
+                "Temp": 25,
+                "Suboptimality": 50},
+            'settings': {
+                "Sequence": seq1,
+                "NaConc": 50,
+                "MgConc": 0,
+                "DNTPsConc": 0,
+                "OligoConc": 0.25,
+                "NucleotideType": "DNA"}}
+        r_hairpin = s.post(url_hairpin, json=data_hairpin, headers=headers)
+        if not r_hairpin.ok:
+            r_hairpin.raise_for_status()
+        result_hairpin = json.loads(r_hairpin.text)
+
+        # self-dimer
+        url_homodimer = 'https://www.idtdna.com/calc/analyzer/home/selfdimer'
+        data_homodimer = {
+            'settings': {
+                "Sequence": seq1,
+                "NaConc": 50,
+                "MgConc": 0,
+                "DNTPsConc": 0,
+                "OligoConc": 0.25,
+                "NucleotideType": "DNA"}}
+        r_homodimer = s.post(url_homodimer, json=data_homodimer, headers=headers)
+        if not r_homodimer.ok:
+            r_homodimer.raise_for_status()
+        result_homodimer = json.loads(r_homodimer.text)
+
+        # heterodimer
+        result_heterodimer = None
+        if seq2 is not None:
+            url_heterodimer = 'https://www.idtdna.com/calc/analyzer/home/heterodimer'
+            data_heterodimer = {"primary": seq1, "secondary": seq2}
+            r_heterodimer = s.post(url_heterodimer, json=data_heterodimer, headers=headers)
+            if not r_heterodimer.ok:
+                r_heterodimer.raise_for_status()
+            result_heterodimer = json.loads(r_heterodimer.text)
+
+        if return_full:
+            return {
+                'analyze': result_analyze,
+                'hairpin': result_hairpin,
+                'homodimer': result_homodimer,
+                'heterodimer': result_heterodimer}
+
+        return {
+            'melt_temp': result_analyze['MeltTemp'],
+            'molecular_weight': result_analyze['MolecularWeight'],
+            'extinction_coefficient': result_analyze['ExtCoefficient'],
+            'max_hairpin_G': min((x['GNode'] for x in result_hairpin['OutputObj']['Structures'])) if len(result_hairpin['OutputObj']['Structures']) > 0 else None,
+            'max_homodimer_G': min((x['DeltaG'] for x in result_homodimer['Results'])) if len(result_homodimer['Results']) > 0 else None,
+            'max_heterodimer_G': min((x['DeltaG'] for x in result_heterodimer['Results'])) if result_heterodimer is not None and len(result_heterodimer['Results']) > 0 else None}
+
 def IDT_complexity_screen(seq, product_type='gblock'):
     '''
     Assess complexity of DNA sequence.
