@@ -1,3 +1,14 @@
+'''
+Services
+- UniProt: www.uniprot.org
+- InterPro: www.ebi.ac.uk/interpro
+- QuickGO: www.ebi.ac.uk/QuickGO
+- NCBI
+- IDT: www.idtdna.com
+- Kazusa DNA Research Institute Codon Usage Database: http://www.kazusa.or.jp/codon/
+- uMelt: https://www.dna-utah.org/umelt/quartz/um.php
+'''
+
 # add path of this file (e.g., a scripts directory) to sys.path
 import sys, os
 sys.path.append(os.path.dirname(__file__))
@@ -2132,5 +2143,38 @@ def convert_codon_usage_format(d, to):
         return {aa: freqs for d in codon_usages for aa, freqs in d.items()}
     else:
         raise ValueError('"to" must be either "table" or "dict".')
+
+def get_melt_curve(seq, resolution=0.5, monovalent_cations=20, mg=3, dmso=0):
+    '''
+    Predict fluorescent DNA melting curves of PCR products. See https://dna-utah.org/umelt/quartz/.
+
+    Args
+    - seq: str
+        DNA sequence (i.e., PCR product; melt curve is calculated for homodimer)
+    - resolution: float. default=0.5
+        Resolution of melt curve prediction (in degrees Celcius)
+    - monovalent_cations: float. default=20
+        Concentration of monovalent cations in millimolar.
+    - mg: float. default=3
+        Concentration of Mg2+ in millimolar.
+    - dmso: float. default=0
+        Concentration of DMSO in %.
+
+    Returns: pandas.DataFrame
+    - temperature: T
+    - helicity: %
+    - derivative_neg: -dF/dT
+    '''
+    url_main = 'https://www.dna-utah.org/umelt/quartz/'
+    with requests.Session() as s:
+        r = s.get(url_main + 'um.php')
+        token = re.search(r'&token=" \+ "(\S+)";', r.text).groups()[0]
+        url = url_main + f'request.php?seq={seq}&density={resolution}&thermo=1&rs=0&cation={monovalent_cations}&mg={mg}&dmso={dmso}&token={token}'
+        r2 = s.get(url)
+
+    temperature = np.array(list(map(float, re.search('<temperature>([^<]+)</temperature>', r2.text).groups()[0].split(' '))))
+    helicity = np.array(list(map(float, re.search('<helicity>([^<]+)</helicity>', r2.text).groups()[0].split(' '))))
+    derivative = np.append((helicity[1:] - helicity[0:-1]) / (temperature[1:] - temperature[0:-1]), np.nan)
+    return pd.DataFrame(dict(temperature=temperature, helicity=helicity, derivative_neg=-derivative))
 
 # endregion --- Miscellaneous
