@@ -421,7 +421,7 @@ def fastaToDf(file, header_prefix='>', headerParser=parseDefaultHeader, keepRawH
 
         if line.startswith(header_prefix):
             # add previous entry to running list of entries
-            if entry['seq'] is not '':
+            if entry['seq'] != '':
                 # add sequence to entry
                 entries.append(entry)
 
