@@ -919,7 +919,7 @@ def _get_QuickGO_helper(url, params, headers, method, attempts=5, sleep=0.5):
             r = requests.get(url, params=params, headers=headers)
             if not r.ok:
                 r.raise_for_status()
-            if method is not 'download':
+            if method != 'download':
                 response_body = r.json()
                 print('numberOfHits: {}'.format(response_body['numberOfHits']),
                       response_body['pageInfo'], sep=', ')
