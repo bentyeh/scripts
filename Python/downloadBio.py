@@ -14,7 +14,7 @@ import sys, os
 sys.path.append(os.path.dirname(__file__))
 
 import collections, io, itertools, json, multiprocessing, re, time
-from collections.abc import Iterable
+import collections.abc
 
 import numpy as np
 import pandas as pd
@@ -974,7 +974,7 @@ def get_QuickGO_descendants(goIds, relations=GO_RELATIONS, depth=-1, dset=None):
     Returns: set of str
     '''
 
-    assert not isinstance(goIds, str) and isinstance(goIds, Iterable)
+    assert not isinstance(goIds, str) and isinstance(goIds, collections.abc.Iterable)
 
     if dset is None:
         dset = set()
@@ -1697,7 +1697,7 @@ def search_NCBIGene(term, email=None, useDefaults=True, useSingleIndirectMatch=T
     if 'verbatim' in params:
         verbatim = params.pop('verbatim')
     for key, values in params.items():
-        if isinstance(values, str) or not isinstance(values, Iterable):
+        if isinstance(values, str) or not isinstance(values, collections.abc.Iterable):
             values = set([values])
         query += ' AND ({})'.format(' OR '.join(['{}[{}]'.format(value, key) for value in values]))
     query += verbatim
@@ -1764,11 +1764,460 @@ def multisearch_NCBIGene(terms, nproc=None, **kwargs):
 
 # region ------ IDT
 
-IDT_URL = 'https://www.idtdna.com'
+# API documentation: https://www.idtdna.com/restapi/swagger/ui/index#/
+# - See also https://www.idtdna.com/pages/tools/apidoc
+# - IDT apparently used to have a servers hosted at http://www.idtdna.com/SciTools/SciTools.aspx and
+#   https://www.idtdna.com/AnalyzerService, the former of which was described in the publication
+#   https://doi.org/10.1093/nar/gkn198
 
-def IDT_OligoAnalyzer(seq1, seq2=None, return_full=False):
+IDT_URL = 'https://www.idtdna.com'
+IDT_API_URL = 'https://www.idtdna.com/restapi/v1/'
+
+# IDT account found via http://bugmenot.com/view/idtdna.com
+IDT_USERNAME = 'ev376821'
+IDT_PASSWORD = 'evan1234'
+
+IDT_DEFAULT_RENAME = {
+    # OligoAnalyzer Analyze results
+    "MeltTemp": "melt_temp",
+    "MolecularWeight": "molecular_weight",
+    "ExtCoefficient": "extinction_coefficient",
+    "UgOD": "ug_od260",
+
+    # OligoAnalyzer Hairpin results
+    "deltaG": "min_hairpin_G",
+}
+
+def IDT_get_access_token(client_id, client_secret, username=IDT_USERNAME, password=IDT_PASSWORD):
+    """
+    Get access token for IDT SciTools Plus API. Adapted from https://www.idtdna.com/pages/tools/apidoc.
+
+    Args
+    - client_id: str
+        IDT API Client ID
+    - client_secret: str
+        IDT API Client secret
+    - username: str. default=IDT_USERNAME
+        IDT account username. Apparently does not have to be the account for which the API key was generated.
+    - password: str. default=IDT_PASSWORD
+        IDT account password
+
+    Returns
+    - access_token: str
+        The access token that can be used to authenticate requests to the IDT API.
+    """
+    from base64 import b64encode
+    # Construct the HTTP request
+    authorization_string = b64encode(bytes(client_id + ":" + client_secret, "utf-8")).decode()
+    request_headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": "Basic " + authorization_string
+    }
+    request_data = {
+        "grant_type": "password",
+        "scope": "test",
+        "username": username,
+        "password": password
+    }
+
+    r = requests.post(
+        "https://www.idtdna.com/Identityserver/connect/token",
+        data=request_data,
+        headers=request_headers
+    )
+
+    if r.status_code != 200:
+        raise RuntimeError("Request failed with error code:" + str(r.status_code) + "\nBody:\n" + r.text)
+
+    response = r.json()
+    return response["access_token"]
+
+
+def IDT_OligoAnalyzer_Analyze(access_token, seq, rename=False, settings=None):
+    """
+    Submit sequences to IDT OligoAnalyzer via IDT SciTools Plus API.
+    See https://www.idtdna.com/calc/analyzer (requires login) and https://www.idtdna.com/calc/Analyzer/Home/Instructions.
+
+    Args
+    - access_token: str
+        Access token for IDT SciTools Plus API
+    - seq: str
+        Nucleic acid sequence. Whitespace is ignored.
+        - Modified bases allowed: see https://www.idtdna.com/site/catalog/Modifications/GetAllMods
+        - Mixed bases allowed: see https://www.idtdna.com/calc/Analyzer/Home/Instructions and
+          https://www.idtdna.com/calc/Analyzer/Home/definitions#MixedBaseDef
+    - rename: bool or dict. default=False
+        Rename results to a standardized nomenclature.
+        If True, renames according to IDT_DEFAULT_RENAME.
+        If a dict, the keys are renamed to the corresponding values.
+    - settings: dict. default=None
+        OligoAnalyzer settings.
+        If None, defaults to nucleotide type "DNA", 50 mM Na+, 0 mM Mg2+, 0 mM dNTPs, 0.25 uM oligo.
+        Acceptable range:
+        - NucleotideType: "DNA" or "RNA"
+        - NaConc: 5 - 1500 mM
+        - MgConc: 0 - 600 mM
+        - DNTPsConc: 0 - 1000 mM
+        - OligoConc: 0.0001 - 100000 uM
+
+    Returns: dict (order is not guaranteed)
+    - BaseCount: int
+    - Complement: str
+        Complemet sequence with a space between every 3 nucleotides
+    - Errors: list of dict
+    - ExtCoefficient: float
+        Units = L/mol/cm. Molar extinction coefficient at 260 nm wavelength.
+    - GCContent: float
+        Percent GC content
+    - HasErrors: bool
+    - HasModelErrors: bool
+    - Length: int
+    - MaxMeltTemp: float
+        Units = Celcius. If the sequence contains mixed bases (e.g., N, R, Y, etc.), this value is the maximum melting
+        temperature; otherwise, 0.
+    - MeltTemp: float
+        Units = Celcius. Melting temperature. If the sequence contains mixed bases, this value is the mean melting
+        temperature.
+    - MinMeltTemp: float
+        Units = Celcius. If the sequence contains mixed bases, this value is the minimum melt temperature; otherwise, 0.
+    - ModelErrors: None or list of str
+    - Mods: None or list of dict
+        List of modifications
+    - MolecularWeight: float
+        Units = g/mol
+    - NmoleOD: float
+        Units = nmol/mL
+    - UgOD: float
+        Units = ug/mL. Inverse of the molar attenuation coefficient at 260 nm wavelength and 1 cm path length
+    - MgConc: float
+        Units = mM. Mg2+ concentration
+    - NaConc: float
+        Units = mM. Na+ concentration
+    - OligoConc: float
+        Units = uM. Oligo concentration
+    - dNTPsConc: float
+        Units = mM. dNTP concentration
+    - NucleotideType: str
+        "DNA" or "RNA"
+    - Sequence: str
+        Query sequence with a space between every 3 nucleotides.
+    """
+    headers = {
+        "Authorization": "Bearer " + access_token,
+        "Accept": "application/json"
+    }
+    data = {
+        "Sequence": seq,
+        "NucleotideType": "DNA", # DNA or RNA
+        "NaConc": 50, # mM
+        "MgConc": 0, # mM
+        "DNTPsConc": 0, # mM
+        "OligoConc": 0.25 # uM
+    }
+    if settings is not None:
+        assert "Sequence" not in settings
+        data.update(settings)
+
+    r = requests.post(
+        IDT_API_URL + 'OligoAnalyzer/Analyze',
+        json=data,
+        headers=headers
+    )
+    if r.status_code != 200:
+        raise RuntimeError("Request failed with error code:" + str(r.status_code) + "\nBody:\n" + r.text)
+
+    response = r.json()
+    if rename:
+        name_map = IDT_DEFAULT_RENAME if rename is True else rename
+        for key in name_map:
+            if key in response:
+                response[name_map[key]] = response.pop(key)
+    return response
+
+def IDT_OligoAnalyzer_Hairpin(access_token, seq, rename=False, settings=None):
+    """
+    Submit sequences to IDT OligoAnalyzer Hairpin via IDT SciTools Plus API.
+
+    Args
+    - access_token: str
+        Access token for IDT SciTools Plus API
+    - seq: str or list of str
+        Nucleic acid sequence(s). Whitespace is ignored.
+        - Modified bases allowed: see https://www.idtdna.com/site/catalog/Modifications/GetAllMods
+        - Mixed bases allowed: see https://www.idtdna.com/calc/Analyzer/Home/Instructions and
+          https://www.idtdna.com/calc/Analyzer/Home/definitions#MixedBaseDef
+    - rename: bool or dict. default=False
+        Rename results to a standardized nomenclature.
+        If True, renames according to IDT_DEFAULT_RENAME.
+        If a dict, the keys are renamed to the corresponding values.
+    - settings: dict. default=None
+        Acceptable range (defaults in parentheses):
+        - NaConc: 5 - 1500 mM (50)
+            The server doesn't seem to enforce this range.
+        - MgConc: 0 - 600 mM (0)
+        - FoldingTemp: 0 - 100 Celcius (25)
+        - NucleotideType: "DNA" or "RNA" ("DNA")
+            Any value other than "DNA" (case-insensitive) is apparently treated as RNA
+
+    Returns: list of dict
+    - Each entry of the list corresponds to an input sequence. It appears as if only results from the hairpin with the
+      lowest Gibbs energy is returned.
+      - id: str
+      - sequence: str
+          Query sequence (exactly as submitted)
+      - thermo: float
+          Units = Celcius. Melting temperature
+      - deltaS: float
+          Units = cal/mol/K. Entropy
+      - deltaG: float
+          Units = kcal/mol. Gibbs free energy
+      - deltaH: float
+          Units = kcal/mol. Enthalpy
+      - success: bool
+      - RNA: bool
+          Whether the query sequence was submitted as RNA
+      - errorMessages: list
+    """
+    headers = {
+        "Authorization": "Bearer " + access_token,
+        "Accept": "application/json"
+    }
+    data = {
+        "NaConc": 50, # mM,
+        "MgConc": 0, # mM,
+        "FoldingTemp": 25, # Celcius,
+        "NucleotideType": "DNA"
+    }
+    if settings is not None:
+        assert "Sequence" not in settings and "Sequences" not in settings
+        data.update(settings)
+    if isinstance(seq, list):
+        data["Sequences"] = seq
+        url = IDT_API_URL + 'OligoAnalyzer/HairpinBatch'
+    elif isinstance(seq, str):
+        data["Sequence"] = seq
+        url = IDT_API_URL + 'OligoAnalyzer/Hairpin'
+    else:
+        raise ValueError("seq must be a str or list of str")
+
+    r = requests.post(url, json=data, headers=headers)
+    if r.status_code != 200:
+        raise RuntimeError("Request failed with error code:" + str(r.status_code) + "\nBody:\n" + r.text)
+
+    response = r.json()
+    if rename:
+        for entry in response:
+            name_map = IDT_DEFAULT_RENAME if rename is True else rename
+            for key in name_map:
+                if key in entry:
+                    entry[name_map[key]] = entry.pop(key)
+    return response
+
+def IDT_OligoAnalyzer_SelfDimer(access_token, seq):
+    """
+    Submit sequences to IDT OligoAnalyzer SelfDimer via IDT SciTools Plus API.
+
+    Args
+    - access_token: str
+        Access token for IDT SciTools Plus API
+    - seq: str
+        Nucleic acid sequence. Whitespace is ignored.
+        - Modified bases allowed: see https://www.idtdna.com/site/catalog/Modifications/GetAllMods
+        - Mixed bases allowed: see https://www.idtdna.com/calc/Analyzer/Home/Instructions and
+          https://www.idtdna.com/calc/Analyzer/Home/definitions#MixedBaseDef
+
+    Returns: list of dict
+    - Each entry of the list corresponds to a potential self dimer structure.
+      - StartPosition: int
+          ??
+      - TopLinePadding: int
+      - BondLinePadding: int
+      - BottomLinePadding: int
+      - Bonds: list of int
+          0 = no bond
+          1 = additional complementary bases for that dimer structure; does not impact DeltaG value
+          2 = part of the longest stretch of complementary bases; contributes to DeltaG value
+      - DeltaG: float
+          Units = kcal/mol. Gibbs free energy from the longest stretch of complementary bases
+      - BasePairs: int
+          Number of basepairs formed
+      - Dimer: None
+          ??
+    """
+    headers = {
+        "Authorization": "Bearer " + access_token,
+        "Accept": "application/json"
+    }
+    r = requests.post(
+        IDT_API_URL + 'OligoAnalyzer/SelfDimer',
+        params=dict(primary=seq),
+        headers=headers
+    )
+    if r.status_code != 200:
+        raise RuntimeError("Request failed with error code:" + str(r.status_code) + "\nBody:\n" + r.text)
+
+    response = r.json()
+    return response
+
+def IDT_OligoAnalyzer_HeteroDimer(access_token, seq1, seq2):
+    """
+    Submit sequences to IDT OligoAnalyzer SelfDimer via IDT SciTools Plus API.
+
+    Args
+    - access_token: str
+        Access token for IDT SciTools Plus API
+    - seq1: str
+        Nucleic acid sequence. Whitespace is ignored.
+        - Modified bases allowed: see https://www.idtdna.com/site/catalog/Modifications/GetAllMods
+        - Mixed bases allowed: see https://www.idtdna.com/calc/Analyzer/Home/Instructions and
+          https://www.idtdna.com/calc/Analyzer/Home/definitions#MixedBaseDef
+    - seq2: str
+        Nucleic acid sequence. Whitespace is ignored.
+        - Modified bases allowed: see https://www.idtdna.com/site/catalog/Modifications/GetAllMods
+        - Mixed bases allowed: see https://www.idtdna.com/calc/Analyzer/Home/Instructions and
+          https://www.idtdna.com/calc/Analyzer/Home/definitions#MixedBaseDef
+
+    Returns: list of dict
+    - Each entry of the list corresponds to a potential dimer structures.
+      - StartPosition: int
+          ??
+      - TopLinePadding: int
+      - BondLinePadding: int
+      - BottomLinePadding: int
+      - Bonds: list of int
+          0 = no bond
+          1 = additional complementary bases for that dimer structure; does not impact DeltaG value
+          2 = part of the longest stretch of complementary bases; contributes to DeltaG value
+      - DeltaG: float
+          Units = kcal/mol. Gibbs free energy from the longest stretch of complementary bases
+      - BasePairs: int
+          Number of basepairs formed
+      - Dimer: None
+          ??
+    """
+    headers = {
+        "Authorization": "Bearer " + access_token,
+        "Accept": "application/json"
+    }
+    r = requests.post(
+        IDT_API_URL + 'OligoAnalyzer/HeteroDimer',
+        params=dict(primary=seq1, secondary=seq2),
+        headers=headers
+    )
+    if r.status_code != 200:
+        raise RuntimeError("Request failed with error code:" + str(r.status_code) + "\nBody:\n" + r.text)
+
+    response = r.json()
+    return response
+
+
+def draw_dimer(seq1, seq2, entry, deltaG=True):
+    """
+    Visualize homodimer.
+
+    Args
+    - seq1: str
+        Nucleic acid sequence (no modified bases)
+    - seq2: str
+        Nucleic acid sequence (no modified bases)
+    - entry: dict
+      - TopLinePadding: int
+      - BondLinePadding: int
+      - BottomLinePadding: int
+      - Bonds: list of int
+          0 = no bond
+          1 = additional complementary bases for that dimer structure; does not impact DeltaG value
+          2 = part of the longest stretch of complementary bases; contributes to DeltaG value
+      - DeltaG: float
+          Units = kcal/mol. Gibbs free energy from the longest stretch of complementary bases
+      - BasePairs: int
+          Number of basepairs formed
+    - deltaG: bool. default=True
+        Also print DeltaG value and number of base pairs, matching the web interface output.
+
+    Returns: str
+      Print this string to visualize homodimer structure
+    """
+    seq1 = "".join(seq1.split()) # remove all whitespace
+    seq2 = "".join(seq2.split()) # remove all whitespace
+
+    top = "5' " + ' ' * entry['TopLinePadding'] + seq1
+    bottom = "3' " + ' ' * entry['BottomLinePadding'] + seq2[::-1]
+    bonds = ' ' * (entry['BondLinePadding'] + 3)
+    bond_map = {0: ' ', 1: ':', 2: '|'}
+    for bond in entry['Bonds']:
+        bonds += bond_map[bond]
+
+    alignment = '\n'.join([top, bonds, bottom])
+    if deltaG:
+        analysis = f"Delta G: {entry['DeltaG']:.2f} kcal/mol, Base Pairs: {entry['BasePairs']}"
+        return analysis + '\n' + alignment
+    return alignment
+
+
+def IDT_OligoAnalyzer_all(access_token, seq1, seq2=None, return_full=False, settings_oligo=None, settings_hairpin=None):
+    """
+    Submit sequences to IDT OligoAnalyzer using IDT SciTools Plus API.
+    See https://www.idtdna.com/calc/analyzer (requires login).
+
+    Args
+    - access_token: str
+        Access token for IDT SciTools Plus API
+    - seq1: str
+        Nucleic acid sequence (e.g., forward primer)
+    - seq2: str. default=None
+        Nucleic acid sequence (e.g., reverse primer)
+    - return_full: bool. default=False
+        Return full JSON response as dict.
+    - settings_oligo: dict. default=None
+        OligoAnalyzer Analyze settings.
+    - settings_hairpin: dict. default=None
+        OligoAnalyzer Hairpin settings.
+
+    Returns: dict
+      If `return_full`: dict representing decoded JSON results.
+        - analyze: dict
+        - hairpin: list of dict
+        - homodimer: list of dict
+        - heterodimer: list of dict
+      Otherwise, a dict (str -> float):
+        melt_temp: melt temperature (Celcius)
+        molecular_weight: molecular weight (g/mol)
+        extinction_coefficient: extinction coefficient (L/mol/cm)
+        min_hairpin_G: smallest (i.e., most negative) ΔG (kcal/mol) of predicted hairpins
+        min_homodimer_G': smallest (i.e., most negative) ΔG (kcal/mol) of homodimers (self-dimers)
+        min_heterodimer_G': smallest (i.e., most negative) ΔG (kcal/mol) of seq1-seq2 heterodimer
+          If seq2 is not provided, this value is None.
+    """
+    result_analyze = IDT_OligoAnalyzer_Analyze(access_token, seq1, settings=settings_oligo)
+    result_hairpin = IDT_OligoAnalyzer_Hairpin(access_token, seq1, settings=settings_hairpin)[0]
+    result_homodimer = IDT_OligoAnalyzer_SelfDimer(access_token, seq1)
+    if seq2:
+        result_heterodimer = IDT_OligoAnalyzer_HeteroDimer(access_token, seq1, seq2)
+    else:
+        result_heterodimer = None
+    if return_full:
+        result = dict(
+            analyze=result_analyze,
+            hairpin=result_hairpin,
+            homodimer=result_homodimer,
+            heterodimer=result_heterodimer
+        )
+    else:
+        result = {
+            'melt_temp': result_analyze['MeltTemp'],
+            'molecular_weight': result_analyze['MolecularWeight'],
+            'extinction_coefficient': result_analyze['ExtCoefficient'],
+            'ug_od260': result_analyze['UgOD'],
+            'min_hairpin_G': result_hairpin['deltaG'],
+            'min_homodimer_G': min((x['DeltaG'] for x in result_homodimer)) if len(result_homodimer) > 0 else None,
+            'min_heterodimer_G': min((x['DeltaG'] for x in result_heterodimer)) if result_heterodimer is not None and len(result_heterodimer) > 0 else None
+        }
+    return result
+
+def IDT_OligoAnalyzer(seq1, seq2=None, return_full=False, username=IDT_USERNAME, password=IDT_PASSWORD):
     '''
-    Submit sequences to IDT OligoAnalyzer.
+    Submit sequences to IDT OligoAnalyzer via web interface.
     See https://www.idtdna.com/calc/analyzer (requires login).
 
     Args
@@ -1785,9 +2234,9 @@ def IDT_OligoAnalyzer(seq1, seq2=None, return_full=False):
         melt_temp: melt temperature (Celcius)
         molecular_weight: molecular weight (g/mol)
         extinction_coefficient: extinction coefficient (L/mol/cm)
-        max_hairpin_G: smallest (i.e., most negative) ΔG (kcal/mol) of predicted hairpins
-        max_homodimer_G': smallest (i.e., most negative) ΔG (kcal/mol) of homodimers (self-dimers)
-        max_heterodimer_G': smallest (i.e., most negative) ΔG (kcal/mol) of seq1-seq2 heterodimer
+        min_hairpin_G: smallest (i.e., most negative) ΔG (kcal/mol) of predicted hairpins
+        min_homodimer_G': smallest (i.e., most negative) ΔG (kcal/mol) of homodimers (self-dimers)
+        min_heterodimer_G': smallest (i.e., most negative) ΔG (kcal/mol) of seq1-seq2 heterodimer
           If seq2 is not provided, this value is None.
     '''
     with requests.Session() as s:
@@ -1796,9 +2245,8 @@ def IDT_OligoAnalyzer(seq1, seq2=None, return_full=False):
         if not r_idt.ok:
             r_idt.raise_for_status()
 
-        # login to IDT - account found via http://bugmenot.com/view/idtdna.com
         url_login = 'https://www.idtdna.com/site/Account/Login/Gatekeeper'
-        data_login = {'UserName': 'ev376821', 'Password': 'evan1234', 'RememberMe': 'true'}
+        data_login = {'UserName': username, 'Password': password, 'RememberMe': 'true'}
         r_login = s.post(url_login, data=data_login)
         if not r_login.ok:
             r_login.raise_for_status()
@@ -1880,9 +2328,9 @@ def IDT_OligoAnalyzer(seq1, seq2=None, return_full=False):
             'melt_temp': result_analyze['MeltTemp'],
             'molecular_weight': result_analyze['MolecularWeight'],
             'extinction_coefficient': result_analyze['ExtCoefficient'],
-            'max_hairpin_G': min((x['GNode'] for x in result_hairpin['OutputObj']['Structures'])) if len(result_hairpin['OutputObj']['Structures']) > 0 else None,
-            'max_homodimer_G': min((x['DeltaG'] for x in result_homodimer['Results'])) if len(result_homodimer['Results']) > 0 else None,
-            'max_heterodimer_G': min((x['DeltaG'] for x in result_heterodimer['Results'])) if result_heterodimer is not None and len(result_heterodimer['Results']) > 0 else None}
+            'min_hairpin_G': min((x['GNode'] for x in result_hairpin['OutputObj']['Structures'])) if len(result_hairpin['OutputObj']['Structures']) > 0 else None,
+            'min_homodimer_G': min((x['DeltaG'] for x in result_homodimer['Results'])) if len(result_homodimer['Results']) > 0 else None,
+            'min_heterodimer_G': min((x['DeltaG'] for x in result_heterodimer['Results'])) if result_heterodimer is not None and len(result_heterodimer['Results']) > 0 else None}
 
 def IDT_complexity_screen(seq, product_type='gblock'):
     '''
