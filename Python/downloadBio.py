@@ -7,11 +7,12 @@ Services
 - IDT: www.idtdna.com
 - Kazusa DNA Research Institute Codon Usage Database: http://www.kazusa.or.jp/codon/
 - uMelt: https://www.dna-utah.org/umelt/quartz/um.php
+- STRING: www.string-db.org
 '''
 
 # add path of this file (e.g., a scripts directory) to sys.path
 import sys, os
-sys.path.append(os.path.dirname(__file__))
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 import collections, io, itertools, json, multiprocessing, re, time
 import collections.abc
@@ -329,137 +330,198 @@ UNIPROT_IDTYPE_TO_ABBREVIATION = {
 
 UNIPROT_IDMAPPING_HEADER = ['UniProtKB-AC', 'ID_type', 'ID']
 
-def convert_UniProt(source, to, query, export='Mapping Table', columns=None, include_unmapped=False, toDf=True, auto_method=True):
+UNIPROT_DB_NAMES = ("UniProtKB", "UniProtKB-Swiss-Prot", "UniRef50", "UniRef90", "UniRef100", "UniParc", "UniProtKB_AC-ID")
+
+def convert_via_UniProt(source, to, query, taxId=None, intermediate="UniProtKB-Swiss-Prot", poll_interval=2, max_time=600, verbose=False):
     '''
-    Convert database identifiers using UniProt's Retrieve/ID mapping service.
+    Wrapper around convert_UniProt to convert between any 2 databases.
+
+    The only new parameter is `intermediate`, which must be either "UniProtKB" or "UniProtKB-Swiss-Prot".
+    - This specifies which intermediate database (all of UniProt, including UniProtKB/Swiss-Prot and UniProtKB/TrEMBL;
+      or UniProtKB/Swiss-Prot only) to use for conversion.
+    '''
+    assert intermediate in ("UniProtKB", "UniProtKB-Swiss-Prot")
+    if source == "UniProtKB_AC-ID" or to in ("UniProtKB", "UniProtKB-Swiss-Prot"):
+        return convert_UniProt(source, to, query, taxId, poll_interval, max_time, verbose)
+    tmp = convert_UniProt(source, intermediate, query, taxId, poll_interval, max_time, verbose)
+    if len(tmp) == 1:
+        # job did not finish before max_time
+        return tmp
+    else:
+        results, failedIds = tmp
+    failedIds = set(failedIds)
+    new_query = set()
+    for s in results.values():
+        new_query |= s
+    tmp = convert_UniProt("UniProtKB_AC-ID", to, list(new_query), taxId, poll_interval, max_time, verbose)
+    if len(tmp) == 1:
+        # job did not finish before max_time
+        return tmp
+    else:
+        results2, failedIds2 = tmp
+    results_final = dict()
+    for id_orig, uniprot_ids in results.items():
+        failed = True
+        for uniprot_id in uniprot_ids:
+            if uniprot_id in results2:
+                failed = False
+                if id_orig not in results_final:
+                    results_final[id_orig] = results2[uniprot_id]
+                else:
+                    results_final[id_orig] |= results2[uniprot_id]
+        if failed:
+            failedIds.add(id_orig)
+    assert len(failedIds & set(results_final.keys())) == 0
+    reconstructed_queries = failedIds | set(results_final.keys())
+    missing_queries = set(query) - reconstructed_queries
+    if len(missing_queries) > 0:
+        print('Failed to get results for', missing_queries, file=sys.stderr)
+    extra_queries = reconstructed_queries - set(query)
+    if len(extra_queries) > 0:
+        print('Results for unsolicited queries', extra_queries, file=sys.stderr)
+    # assert all(entry in reconstructed_queries for entry in query)
+    return results_final, list(failedIds)
+
+def convert_UniProt(source, to, query, taxId=None, poll_interval=2, max_time=600, verbose=False):
+    '''
+    Convert database identifiers using UniProt's ID mapping service.
+
+    See https://rest.uniprot.org/configure/idmapping/fields for names of databases
+    to use as arguments for "source" and "to". In general, a single server request
+    can convert between any non-UniProt identifier and a UniProt identifier, but cannot
+    convert between two non-UniProt identifiers. Use convert_via_UniProt() to automatically
+    first convert a non-UniProt identifier to a UniProt identifier, and then convert to
+    the target non-UniProt identifier.
 
     Args
     - source: str
-        Query identifier type.
+        Query identifier type. (e.g., UniProtKB, Ensembl_Protein, etc.)
     - to: str
-        Target identifier type.
-    - query: iterable of str, or io.TextIOBase
-        Iterable of identifiers, or file of identifiers separated by spaces or new lines.
-    - export: str. default='tab'
-        Both long and short-hand formats supported.
-          Format shown in drop-down menu on UniProt's website | Short-hand      | Supported when not mapping to ACC
-          --------------------------------------------------- | --------------- | ---------------------------------
-          FASTA (canonical)                                   | fasta           | no
-          FASTA (canonical & isoform)                         | [not supported] | no
-          Tab-separated                                       | tab             | no
-          Excel                                               | xlsx            | no
-          XML                                                 | xml             | no
-          RDF/XML                                             | rdf             | no
-          Text                                                | txt             | no
-          GFF                                                 | gff             | no
-          Mapping Table                                       | tab             | yes
-          Target List                                         | list            | yes
-    - columns: list of str. default=None
-        Only applicable when mapping to UniProt accessions (to='ACC') and either Tab-separated or Excel formats.
-        List of columns to include - see UNIPROT_COLUMNS.
-        If None, defaults to Entry, Entry name, Reviewed, Protein names, Gene names, Organism, Length
-    - include_unmapped: bool. default=False
-        Also return list of unmapped query identifiers.
-    - toDf: bool. default=True
-        Return results as a DataFrame.
-        Available for FASTA, Tab-separated, Excel, GFF, and Mapping Table formats.
-    - auto_method: bool. default=True
-        If query is a large iterable of str, use the file upload method (more reliably supports large queries).
+        Target identifier type. (e.g., UniProtKB, Gene_Name, etc.)
+    - query: list of str, or io.TextIOBase
+        List of identifiers
+    - taxId: str. default=None
+        NCBI taxonomy ID
+    - poll_interval: int or float. default=2
+        Seconds to sleep between polling the server for job status
+    - max_time: int or float. default=600 (10 minutes)
+        Maximum seconds to wait before returning.
+    - verbose: bool. default=False
+        Print messages about jobID, etc.
 
     Returns
-      `include_unmapped` is True: 2-tuple where the 1st element is as below, and the 2nd element
-        is a list of str (unmapped identifiers)
-      `include_unmapped` is False:
-        - `toDf` is True and applicable: pandas.DataFrame
-          - Mapping to UniProt identifers: Columns specified by `columns`
-          - Otherwise: 'From' and 'To' columns
-        - export = 'Target List' or 'list': list of str
-        - Otherwise: str
+    - If max_time is not exceeded:
+      - suceeded: dict[str, set[str]] mapping query identifiers to target identifiers
+      - failed: list[str] of query identifiers that could not be successfully mapped
+    - If max_time is exceeded:
+      - jobId: str
 
-    Reference: https://www.uniprot.org/help/api_idmapping
+    Reference: https://www.uniprot.org/help/id_mapping
     '''
-    url_up = 'https://www.uniprot.org/uploadlists/'
-    url_mapping = 'https://www.uniprot.org/mapping/'
-    export_formats = {
-        'FASTA (canonical)': 'fasta',
-        'FASTA (canonical & isoform)': 'fasta',
-        'Tab-separated': 'tab',
-        'Excel': 'xlsx',
-        'XML': 'xml',
-        'RDF/XML': 'rdf',
-        'Text': 'txt',
-        'GFF': 'gff',
-        'Mapping Table': 'tab',
-        'Target List': 'list'
-    }
+    url_mapping = 'https://rest.uniprot.org/idmapping'
+    url_submit = f'{url_mapping}/run'
+    url_result = f'{url_mapping}/results'
 
-    if export in export_formats.values():
-        ext = export
-        export = [long for long, short in export_formats.items() if short == export][0]
-    assert export in export_formats
-    ext = export_formats[export]
-
-    data = {'format': ext}
-    if to == 'ACC':
-        if export == 'FASTA (canonical & isoform)':
-            data.update({'include': 'yes'})
-
-        if columns is not None:
-            data.update({'columns': ','.join([UNIPROT_COLUMNS[col] for col in columns])})
-    else:
-        assert export in ('Mapping Table', 'Target List')
-
-    if auto_method and not issubclass(type(query), io.TextIOBase) and len(query) > 1000:
-        query = io.StringIO('\n'.join(list(query)))
-
-    if issubclass(type(query), io.TextIOBase):
-        files = {
-            'landingPage': (None, 'false'),
-            'jobId': (None, ''),
-            'uploadQuery': (None, ''),
-            'url2': (None, ''),
-            'file': ('query', query, 'text/plain'),
-            'from': (None, source),
-            'to': (None, to),
-            'taxon': (None, '')}
-    else:
-        files = None
-        data.update({'from': source, 'to': to, 'query': '\n'.join(query)})
-
-    r = requests.post(url=url_up, files=files, data=data)
+    r = requests.post(
+        url=url_submit,
+        data={
+            'from': source,
+            'to': to,
+            'ids': ','.join(query),
+            'taxId': taxId
+        }
+    )
+    if not r.ok and source in UNIPROT_DB_NAMES and taxId is not None:
+        print('Since source is a UniProt database, re-trying without taxonomy ID.', file=sys.stderr)
+        r = requests.post(
+            url=url_submit,
+            data={
+                'from': source,
+                'to': to,
+                'ids': ','.join(query)
+            }
+        )
     if not r.ok:
         r.raise_for_status()
 
-    if r.url.startswith(url_mapping):
-        list_id = r.url.split('/')[-1].split('.')[0]
+    jobId = r.json()['jobId']
+    if verbose:
+        print('UniProt ID mapping request URL:', r.url)
+        print('UniProt ID mapping job ID:', jobId)
+
+    start = time.time()
+    current_time = time.time()
+    finished = False
+    while current_time - start < max_time:
+        status = requests.get(f"{url_mapping}/status/{jobId}")
+        if not status.ok:
+            status.raise_for_status()
+        j = status.json()
+        if "jobStatus" in j:
+            if j["jobStatus"] in ("NEW", "RUNNING"):
+                if verbose:
+                    print(f"UniProt ID mapping waiting for job to complete: retrying in {poll_interval}s")
+                time.sleep(poll_interval)
+                current_time = time.time()
+            else:
+                raise Exception(j["jobStatus"])
+        else:
+            finished = True
+            break
+
+    if not finished:
+        if verbose:
+            print(f"UniProt ID mapping job did not finish within max_time of {max_time}s. Returning jobId.")
+        return jobId
+
+    if "failedIds" in j:
+        failedIds = j["failedIds"]
     else:
-        list_id = re.search('yourlist:([^&]+)', r.url).groups()[0]
+        failedIds = []
 
-    if to == 'ACC' and export == 'Mapping Table':
-        r = requests.get(url=url_mapping + list_id + '.tab')
+    results = dict()
+    for d in j['results']:
+        k = d['from']
+        v = d['to']
+        # "If you map to UniProtKB, UniParc or UniRef data, the full entries will be returned to you for convenience."
+        if to in ('UniProtKB', "UniProtKB-Swiss-Prot"):
+            v = v['primaryAccession']
+        elif to in ("UniRef50", "UniRef90", "UniRef100"):
+            v = v['id']
+        elif to == 'UniParc':
+            v = v['uniParcId']
+        if k not in results:
+            results[k] = {v}
+        else:
+            results[k].add(v)
+    while 'Link' in status.headers:
+        url_next = re.match(r'<(.+)>; rel="next"', status.headers["Link"]).group(1)
+        status = requests.get(url_next)
+        j = status.json()
+        for d in j['results']:
+            k = d['from']
+            v = d['to']
+            if to in ('UniProtKB', "UniProtKB-Swiss-Prot"):
+                v = v['primaryAccession']
+            elif to in ("UniRef50", "UniRef90", "UniRef100"):
+                v = v['id']
+            elif to == 'UniParc':
+                v = v['uniParcId']
+            if k not in results:
+                results[k] = {v}
+            else:
+                results[k].add(v)
 
-    if ext in ('fasta', 'tab', 'xlsx', 'gff') and toDf:
-        if ext == 'tab':
-            mapped = pd.read_csv(io.StringIO(r.text), sep='\t', header=0, index_col=False)
-        elif ext == 'gff':
-            mapped = pd.read_csv(io.StringIO(r.text), sep='\t', header=None, comment='#',
-                                 names=utils_bio.GFF3_COLNAMES, index_col=False)
-        elif ext == 'xlsx':
-            mapped = pd.read_excel(io.BytesIO(r.content))
-        elif ext == 'fasta':
-            mapped = utils_bio.fastaToDf(io.StringIO(r.text), headerParser=utils_bio.parseUniProtHeader)
-    elif ext == 'list':
-        mapped = r.text.splitlines()
-    else:
-        mapped = r.text
-
-    if include_unmapped:
-        r_unmapped = requests.get(url=url_mapping + list_id + '.not')
-        if not r_unmapped.ok:
-            r_unmapped.raise_for_status()
-        unmapped = r_unmapped.text.splitlines()[1:]
-        return (mapped, unmapped)
-    return mapped
+    assert len(set(failedIds) & set(results.keys())) == 0
+    reconstructed_queries = set(failedIds) | set(results.keys())
+    missing_queries = set(query) - reconstructed_queries
+    if len(missing_queries) > 0:
+        print('Failed to get results for', missing_queries, file=sys.stderr)
+    extra_queries = reconstructed_queries - set(query)
+    if len(extra_queries) > 0:
+        print('Results for unsolicited queries', extra_queries, file=sys.stderr)
+    # assert all(entry in reconstructed_queries for entry in query)
+    return results, failedIds
 
 def get_UniProt(uniprot_ac, export, toDf=False):
     '''
@@ -2470,6 +2532,59 @@ def IDT_codon_opt(seqs, sequence_type, taxon_id, product_type='gblock', return_f
             columns = ['name', 'input', 'output', 'complexity'])
 
 # endregion --- IDT
+
+# region --- STRING
+
+def get_interactors_string(
+    identifiers: list[str],
+    species: int = 10090,
+    limit: int | None = None,
+    required_score: int | float | None = None,
+    network_type: str = 'functional',
+    output_format: str = 'tsv',
+    caller_identity: str = 'btyeh',
+) -> str | pd.DataFrame:
+    '''
+    See https://string-db.org/cgi/help.pl?subpage=api%23getting-all-the-string-interaction-partners-of-the-protein-set.
+
+    Args
+    - identifiers: protein identifiers
+    - species: NCBI taxon ID
+    - limit: number of interaction partners retrieved per protein
+        If not specified, the STRING server appears to default to 10.
+    - required_score: threshold of significance to include a interaction, a number between 0 and 1000
+        Appears to correspond to 1000 * interaction score
+    - network_type: 'functional' or 'physical'
+    - output_format: 'tsv', 'tsv-no-header', 'json', 'xml', 'psi-mi', or 'psi-mi-tab'
+    - caller_identity: user identity
+
+    Returns
+    - If output_format == 'tsv': returns a DataFrame
+    - Otherwise, returns the server result as plain text.
+    '''
+    assert output_format in ['tsv', 'tsv-no-header', 'json', 'xml', 'psi-mi', 'psi-mi-tab']
+    assert network_type in ['functional', 'physical']
+    URL_STRING_PARTNERS = f'https://string-db.org/api/{output_format}/interaction_partners'
+    params = dict(
+        identifiers='\r'.join(identifiers),
+        species=species,
+        limit=limit,
+        required_score=required_score,
+        network_type=network_type,
+        caller_identity=caller_identity
+    )
+    params = {k: v for k, v in params.items() if v is not None}
+    r = requests.get(
+        url=URL_STRING_PARTNERS,
+        params=params
+    )
+    result = r.content.decode()
+    if output_format == 'tsv':
+        return pd.read_csv(io.StringIO(result), sep='\t')
+    else:
+        return result
+
+# endregion --- STRING
 
 # region ------ Miscellaneous
 
