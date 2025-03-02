@@ -1,8 +1,8 @@
 # add path of this file (e.g., a scripts directory) to sys.path
 import sys, os
-sys.path.append(os.path.dirname(__file__))
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-import copy, io, re, subprocess, tempfile
+import copy, io, re, subprocess, tempfile, urllib.parse
 
 import numpy as np
 import pandas as pd
@@ -99,6 +99,21 @@ BED_COLNAMES = ['chrom', 'chromStart', 'chromEnd', 'name', 'score', 'strand', 't
                 'itemRgb', 'blockCount', 'blockSizes', 'blockStarts']
 
 GFF3_COLNAMES = ['seqid', 'source', 'type', 'start', 'end', 'score', 'strand', 'phase', 'attributes']
+
+# see https://github.com/the-sequence-ontology/specifications/blob/master/gff3.md
+DTYPES_GFF3 = {
+    'seqid': 'category',
+    'source': 'category',
+    'type': 'category',
+    'start': int,
+    'end': int,
+    'score': float,
+    'strand': pd.CategoricalDtype(categories=['+', '-', '.', '?']),
+    'phase': pd.CategoricalDtype(categories=['0', '1', '2', '.']),
+    'attributes': str
+}
+
+DTYPES_GFF3_NO_SCORE = DTYPES_GFF3 | {'score': pd.CategoricalDtype(categories=['.'])}
 
 # endregion --- File type columns
 
@@ -980,3 +995,60 @@ def blastToDf(records):
     return pd.DataFrame(hsps)
 
 # endregion --- Sequence alignment tools
+
+# region --- GTF/GFF tools
+
+# see https://github.com/the-sequence-ontology/specifications/blob/master/gff3.md
+DTYPES_GFF3 = {
+    'seqid': 'category',
+    'source': 'category',
+    'type': 'category',
+    'start': int,
+    'end': int,
+    'score': float,
+    'strand': pd.CategoricalDtype(categories=['+', '-', '.', '?']),
+    'phase': pd.CategoricalDtype(categories=['0', '1', '2', '.']),
+    'attributes': str
+}
+
+DTYPES_GFF3_NO_SCORE = DTYPES_GFF3 | {'score': pd.CategoricalDtype(categories=['.'])}
+
+def add_columns_from_attributes(
+    df: pd.DataFrame,
+    attributes: None | list[str] = None,
+    rename_attributes: None | dict[str, str] = None,
+    col_attributes: str = 'attributes',
+    table_type: str = 'GTF'
+) -> pd.DataFrame:
+    '''
+    Add attributes from the attributes column of a GTF table to its own column.
+
+    Args
+    - df: GTF/GFF table
+    - attributes: attributes to extract from attributes column
+    - rename_attributes: mapping of attributes to new column names
+    - col_attributes: name of attributes column
+    - table_type: whether attributes are given in GFF format (tag1=value1;tag2=value2)
+        or GTF format (tag1 "value1"; tag2 "value2")
+
+    Returns: table with the extracted attributes as new columns
+    '''
+    assert table_type.lower() in ('gtf', 'gff')
+    if attributes is None:
+        return df
+    for attribute in attributes:
+        if rename_attributes:
+            new_col_name = rename_attributes[attribute]
+        else:
+            new_col_name = attribute
+        if table_type.lower() == 'gtf':
+            regex = r'(?:^| )' + attribute + r' "([^"]+)"'
+            df[new_col_name] = df[col_attributes].str.extract(regex, expand=False)
+        else:
+            regex = r'(?:^|;)' + attribute + r'([^,=;]+)'
+            df[new_col_name] = df[col_attributes].str.extract(regex, expand=False).map(urllib.parse.unquote)
+            # In GFF attributes, tags or values containing ",=;" characters are encoded using URL escape rules
+            # see https://github.com/the-sequence-ontology/specifications/blob/master/gff3.md
+    return df
+
+# endregion --- GTF/GFF tools
