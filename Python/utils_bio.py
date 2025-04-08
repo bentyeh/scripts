@@ -1,8 +1,7 @@
 # add path of this file (e.g., a scripts directory) to sys.path
-import sys, os
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-
-import copy, io, re, subprocess, tempfile, urllib.parse
+import copy, io, os, re, subprocess, sys, tempfile, urllib.parse
+from pathlib import Path
+sys.path.append(Path(__file__).resolve(strict=True).parent)
 
 import numpy as np
 import pandas as pd
@@ -521,7 +520,7 @@ def fastqToDf(file, quality=True, reads_keep=None, reads_ignore=None, close=True
     if reads_ignore is not None:
         reads_ignore = set(reads_ignore)
     if isinstance(file, str):
-        assert os.path.exists(file)
+        assert Path(file).exists()
         if file.endswith('.gz'):
             cat = 'zcat'
         elif file.endswith('.bz2'):
@@ -829,7 +828,7 @@ def bamToDf(file, samtools_path=None, use_tempfile=True, parser=samToDf, verbose
         if result.returncode != 0:
             raise NotImplementedError('Parsing BAM files relies on samtools, which was not found.')
         samtools_path = result.stdout.splitlines()[0]
-    assert os.path.exists(file)
+    assert Path(file).exists()
 
     if use_tempfile:
         with tempfile.NamedTemporaryFile(mode='r') as sam_file:

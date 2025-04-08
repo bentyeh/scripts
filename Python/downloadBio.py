@@ -10,12 +10,8 @@ Services
 - STRING: www.string-db.org
 '''
 
-# add path of this file (e.g., a scripts directory) to sys.path
-import sys, os
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-
-import collections, io, itertools, json, multiprocessing, re, time
-import collections.abc
+import collections, collections.abc, io, itertools, json, multiprocessing, os, re, time, sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -24,6 +20,8 @@ import Bio.Blast.NCBIWWW
 import Bio.SearchIO
 from tqdm import tqdm
 
+# add path of this file (e.g., a scripts directory) to sys.path
+sys.path.append(Path(__file__).resolve(strict=True).parent)
 import utils_files, utils_bio
 
 # region ------ UniProt
@@ -1522,7 +1520,7 @@ def blastAndParse(blast_fun=my_qblast, save=None, parse=None, parse_type=None, p
         return result
 
     if save is not None:
-        os.makedirs(os.path.dirname(save), exist_ok=True)
+        Path(save).parent.mkdir(parents=True, exist_ok=True)
         with utils_files.createFileObject(save, 'wt') as f:
             f.write(result.read())
         result.seek(0)
@@ -1536,13 +1534,13 @@ def blastAndParse(blast_fun=my_qblast, save=None, parse=None, parse_type=None, p
             return result
 
         if parse_type in parse_types:
-            os.makedirs(os.path.dirname(parse), exist_ok=True)
+            Path(parse).parent.mkdir(parents=True, exist_ok=True)
             for qresult in Bio.SearchIO.parse(result, format=parse_types[parse_type]):
                 if parse_name is None:
                     filename = utils_files.createValidPath(qresult.id) + extension[parse_type]
                 else:
                     filename = parse_name(qresult)
-                with utils_files.createFileObject(os.path.join(parse, filename), 'wt') as f:
+                with utils_files.createFileObject(Path(parse, filename), 'wt') as f:
                     Bio.SearchIO.write(qresult, f, parse_types[parse_type])
         else:
             print(f'Parsing of format_type {parse_type} is not supported.', file=log)

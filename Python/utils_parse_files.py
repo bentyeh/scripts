@@ -1,9 +1,10 @@
 # add path of this file (e.g., a scripts directory) to sys.path
 import collections, multiprocessing, os, re, sys, time
-sys.path.append(os.path.dirname(__file__))
+from pathlib import Path
 
 import pandas as pd
 
+sys.path.append(Path(__file__).resolve(strict=True).parent)
 import utils, utils_files
 
 def _to_csv(x, col, folder_out, ext='', **kwargs):
@@ -27,7 +28,7 @@ def _to_csv(x, col, folder_out, ext='', **kwargs):
     
     Returns: None
     '''
-    x.to_csv(os.path.join(folder_out, x[col].unique()[0] + ext), **kwargs)
+    x.to_csv(Path(folder_out, x[col].unique()[0] + ext), **kwargs)
 
 def shard_df_pandas(file_in, folder_out, col, sep, header=None, chunksize=None,
                     nproc=None, ext=None, verbose=True, **kwargs):
@@ -154,7 +155,7 @@ def shard_df(file_in, folder_out, col, start=0, end=None, sep=None, flush=None, 
     assert start >= 0 and start <= end
     assert flush is None or flush > 0
     assert close in (True, False)
-    assert os.path.exists(folder_out)
+    assert Path(folder_out).exists() and Path(folder_out).is_dir()
 
     # dictionary of keys -> file objects opened for writing
     files_out = {}
@@ -177,7 +178,7 @@ def shard_df(file_in, folder_out, col, start=0, end=None, sep=None, flush=None, 
                 files_out \
                     .setdefault(
                         key,
-                        utils_files.createFileObject(os.path.join(folder_out, f'{key}_{start}{ext}'), 'wt')) \
+                        utils_files.createFileObject(Path(folder_out, f'{key}_{start}{ext}'), 'wt')) \
                     .write(line)
 
                 if flush is not None:
@@ -221,7 +222,7 @@ def shard_df_mp(file_in, folder_out, col, nproc=None, shard_size=None, **kwargs)
         shard_size = int(file_size / nproc)
     with open(file_in) as f:
         with multiprocessing.Pool(nproc) as pool:
-            for shard_start in range(start, file_size, shard_size):
+            for shard_start in range(0, file_size, shard_size):
                 shard_end = shard_start + shard_size
                 pool.apply_async(shard_df, (file_in, folder_out, col, shard_start, shard_end), kwargs)
             pool.close()
