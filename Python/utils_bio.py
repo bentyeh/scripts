@@ -1012,6 +1012,32 @@ DTYPES_GFF3 = {
 
 DTYPES_GFF3_NO_SCORE = DTYPES_GFF3 | {'score': pd.CategoricalDtype(categories=['.'])}
 
+def extract_gtf_attribute(
+    s_attributes: pd.Series,
+    attribute: str,
+    table_type: str = 'gtf'
+) -> pd.Series:
+    '''
+    Extract attribute from GTF/GFF attributes column.
+
+    Args
+    - s_attributes: GTF/GFF attributes column
+    - attribute: name of attribute to extract
+    - table_type: 'gtf' or 'gff'
+
+    Returns: extracted attribute values
+    '''
+    if table_type == 'gtf':
+        regex = r'(?:^| )' + attribute + r' "([^"]+)"'
+        return s_attributes.str.extract(regex, expand=False)
+    elif table_type == 'gff':
+        regex = r'(?:^|;)' + attribute + r'([^,=;]+)'
+        # In GFF attributes, tags or values containing ",=;" characters are encoded using URL escape rules
+        # see https://github.com/the-sequence-ontology/specifications/blob/master/gff3.md
+        return s_attributes.str.extract(regex, expand=False).map(urllib.parse.unquote)
+    else:
+        raise ValueError(f"table_type {table_type} not understood; must be either 'gtf' or 'gff'")
+
 def add_columns_from_attributes(
     df: pd.DataFrame,
     attributes: None | list[str] = None,
@@ -1032,7 +1058,6 @@ def add_columns_from_attributes(
 
     Returns: table with the extracted attributes as new columns
     '''
-    assert table_type.lower() in ('gtf', 'gff')
     if attributes is None:
         return df
     for attribute in attributes:
@@ -1040,14 +1065,7 @@ def add_columns_from_attributes(
             new_col_name = rename_attributes[attribute]
         else:
             new_col_name = attribute
-        if table_type.lower() == 'gtf':
-            regex = r'(?:^| )' + attribute + r' "([^"]+)"'
-            df[new_col_name] = df[col_attributes].str.extract(regex, expand=False)
-        else:
-            regex = r'(?:^|;)' + attribute + r'([^,=;]+)'
-            df[new_col_name] = df[col_attributes].str.extract(regex, expand=False).map(urllib.parse.unquote)
-            # In GFF attributes, tags or values containing ",=;" characters are encoded using URL escape rules
-            # see https://github.com/the-sequence-ontology/specifications/blob/master/gff3.md
+        df[new_col_name] = extract_gtf_attribute(df[col_attributes], attribute, table_type)
     return df
 
 # endregion --- GTF/GFF tools
