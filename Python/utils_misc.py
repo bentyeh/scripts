@@ -153,7 +153,7 @@ def intervals_value(intervals, pos, check_intervals=True):
         assert np.all(end[:-1] <= start[1:])
 
     array_idx = (start <= pos) & (end > pos)
-    in_intervals = np.sum(array_idx, axis=1, dtype=np.bool)
+    in_intervals = np.sum(array_idx, axis=1, dtype=bool)
 
     pos_values = np.full(len(pos), None)
     pos_values[in_intervals] = value[np.where(array_idx)[1]]
@@ -314,7 +314,7 @@ def intervals_overlap(
                     yield interval1, interval2, value1, value2
                     id2s_seen.add(id2)
                     id1_seen = True
-                    id2, (interval2, value2) = _advance(iter2) or (None, (None, None))
+                id2, (interval2, value2) = _advance(iter2) or (None, (None, None))
 
         # Advance the iterator for intervals1
         if not id1_seen and how in ('left', 'outer'):
@@ -339,7 +339,7 @@ def intervals_filter_by_overlap(
     values1: collections.abc.Iterable | None = None,
     how: str = "semi",
     **kwargs
-) -> collections.abc.Iterable[tuple[tuple[typing.Any, int, int] | None, typing.Any, tuple[typing.Any, int, int] | None, typing.Any]]:
+) -> collections.abc.Iterable[tuple[tuple[typing.Any, int, int], typing.Any]]:
     """
     Filtering joins: filter intervals in intervals1 based on the presence or absence of overlaps in intervals2
 
@@ -355,18 +355,19 @@ def intervals_filter_by_overlap(
         - 'semi': only intervals in intervals1 that overlap with intervals2
         - 'anti': only intervals in intervals1 that do not overlap with intervals2
     - **kwargs: passed to intervals_overlap_grouped()
+
+    Yields: interval1, value1
     """
     if how == 'semi':
-        # add id to each group in intervals1 to track which intervals have been seen
-        def add_id(intervals):
-            for i, (group, start, end) in enumerate(intervals):
-                yield ((group, i), start, end)
+        if values1 is None:
+            values1 = itertools.repeat(None)
+        # add id to each value1 to track which intervals have been yielded
         last_id1_seen = -1
-        for interval1, _, value1, _ in intervals_overlap_grouped(add_id(intervals1), add_id(intervals2), values1=values1, how='inner', **kwargs):
-            (group, id1), start1, end1 = interval1
+        for interval1, _, value1, _ in intervals_overlap_grouped(intervals1, intervals2, values1=enumerate(values1), how='inner', **kwargs):
+            id1, value = value1
             if id1 > last_id1_seen:
                 last_id1_seen = id1
-                yield (group, start1, end1), value1
+                yield interval1, value
     elif how == 'anti':
         for interval1, interval2, value1, _ in intervals_overlap_grouped(intervals1, intervals2, values1=values1, how='left', **kwargs):
             if interval2 is None:
@@ -382,7 +383,7 @@ def intervals_overlap_grouped(
     values2: collections.abc.Iterable | None = None,
     how: str = "inner",
     **kwargs
-) -> collections.abc.Iterable[tuple[tuple[typing.Any, int, int] | None, typing.Any, tuple[typing.Any, int, int] | None, typing.Any]]:
+) -> collections.abc.Iterable[tuple[tuple[typing.Any, int, int] | None, tuple[typing.Any, int, int] | None, typing.Any, typing.Any]]:
     """
     Find overlapping intervals between two sets of intervals. Only intervals in the same group are compared.
 
