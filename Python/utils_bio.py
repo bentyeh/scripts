@@ -1015,7 +1015,7 @@ DTYPES_GFF3_NO_SCORE = DTYPES_GFF3 | {'score': pd.CategoricalDtype(categories=['
 def extract_gtf_attribute(
     s_attributes: pd.Series,
     attribute: str,
-    table_type: str = 'gtf'
+    table_type: str = 'GTF'
 ) -> pd.Series:
     '''
     Extract attribute from GTF/GFF attributes column.
@@ -1023,20 +1023,20 @@ def extract_gtf_attribute(
     Args
     - s_attributes: GTF/GFF attributes column
     - attribute: name of attribute to extract
-    - table_type: 'gtf' or 'gff'
+    - table_type: 'GTF' or 'GFF'
 
     Returns: extracted attribute values
     '''
-    if table_type == 'gtf':
+    if table_type == 'GTF':
         regex = r'(?:^| )' + attribute + r' "([^"]+)"'
         return s_attributes.str.extract(regex, expand=False)
-    elif table_type == 'gff':
+    elif table_type == 'GFF':
         regex = r'(?:^|;)' + attribute + r'([^,=;]+)'
         # In GFF attributes, tags or values containing ",=;" characters are encoded using URL escape rules
         # see https://github.com/the-sequence-ontology/specifications/blob/master/gff3.md
         return s_attributes.str.extract(regex, expand=False).map(urllib.parse.unquote)
     else:
-        raise ValueError(f"table_type {table_type} not understood; must be either 'gtf' or 'gff'")
+        raise ValueError(f"table_type {table_type} not understood; must be either 'GTF' or 'GFF'")
 
 def add_columns_from_attributes(
     df: pd.DataFrame,
