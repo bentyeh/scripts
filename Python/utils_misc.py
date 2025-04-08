@@ -199,28 +199,28 @@ def simple_overlap(start1: int, end1: int, start2: int, end2: int) -> bool:
 
 def intervals_overlap(
     intervals1: collections.abc.Iterable[tuple[typing.Any, int, int]],
-    values1: collections.abc.Iterable,
     intervals2: collections.abc.Iterable[tuple[typing.Any, int, int]],
-    values2: collections.abc.Iterable,
+    values1: collections.abc.Iterable | None = None,
+    values2: collections.abc.Iterable | None = None,
     overlap_func: collections.abc.Callable | None = None,
     how: str = "inner",
     max_distance: int = 0,
-) -> collections.abc.Iterable[tuple[tuple[typing.Any, int, int] | None, typing.Any, tuple[typing.Any, int, int] | None, typing.Any]]:
+) -> collections.abc.Iterable[tuple[tuple[typing.Any, int, int] | None, tuple[typing.Any, int, int] | None, typing.Any, typing.Any]]:
     """
     Find overlapping intervals between two sets of intervals.
     Implemented lazily as a generator to be as memory efficient as possible.
 
     Args
     - intervals1: The first set of intervals, where each interval is represented as a tuple (group, start, end).
-        Assumptions: group is constant; intervals are sorted by start and end.
-        No checking is performed on group.
+        Assumptions: intervals are sorted by start and end; group is ignored.
         start and end are 0-based, start-closed, end-open.
-    - values1: The data associated with the first set of intervals.
+        Intervals can be overlapping; each interval is treated independently.
     - intervals2: The second set of intervals, where each interval is represented as a tuple (group, start, end).
-        Assumptions: group is constant; intervals are sorted by start and end.
-        No checking is performed on group.
+        Assumptions: intervals are sorted by start and end; group is ignored.
         start and end are 0-based, start-closed, end-open.
-    - values2: The data associated with the second set of intervals.
+        Intervals can be overlapping; each interval is treated independently.
+    - values1: The data associated with the first set of intervals. If None, treated as a repeating iterable of None.
+    - values2: The data associated with the second set of intervals. If None, treated as a repeating iterable of None.
     - overlap_func: A function to determine if two intervals overlap. If None, defaults to simple_overlap().
         Must take 4 arguments (start1, end1, start2, end2) and return a boolean.
         Examples:
@@ -236,9 +236,13 @@ def intervals_overlap(
                 - interval2: (0, 14, 20):               ------
     - how: Which intervals to report
         - 'left': report all intervals in intervals1, including those without overlapping intervals in intervals2
-            Intervals without overlaps will have None for the other interval and value: (interval1, value1, None, None)
+            - The same interval in interval1 may be reported multiple times if it overlaps with multiple intervals in
+            intervals2.
+            - Intervals without overlaps will have None for the other interval and value: (interval1, value1, None, None)
         - 'right': report all intervals in intervals2, including those without overlapping intervals in intervals1
-            Intervals without overlaps will have None for the other interval and value: (None, None, interval2, value2)
+            - The same interval in interval2 may be reported multiple times if it overlaps with multiple intervals in
+            intervals1.
+            - Intervals without overlaps will have None for the other interval and value: (None, None, interval2, value2)
         - 'inner': only report overlapping intervals
         - 'outer': report all intervals, including those without overlapping intervals in the other set
     - max_distance: maximum distance between intervals such that they could be considered overlapping
@@ -247,10 +251,14 @@ def intervals_overlap(
         - Two intervals that are adjacent (end1 == start2) but non-overlapping are considered to be separated by
           distance 1.
 
-    Returns: iterable of (interval1, value1, interval2, value2)
+    Returns: iterable of (interval1, interval2, value1, value2)
     """
     if how not in ('left', 'right', 'inner', 'outer'):
         raise ValueError(f"how='{how}' not supported; must be one of 'left', 'right', 'inner', 'outer'")
+    if values1 is None:
+        values1 = itertools.repeat(None)
+    if values2 is None:
+        values2 = itertools.repeat(None)
     if overlap_func is None:
         overlap_func = simple_overlap
 
@@ -260,7 +268,7 @@ def intervals_overlap(
     id1, (interval1, value1) = _advance(iter1) or (None, (None, None))
 
     d = collections.deque() # deque of id2, ((group2, start2, end2), value2)
-    id2s_seen = set() # track which interval2s have been yielded; only needs to hold id2s that are in the deque
+    id2s_seen = set() # track which interval2s in the deque have previously been yielded
 
     while id1 is not None:
         group1, start1, end1 = interval1
@@ -272,15 +280,19 @@ def intervals_overlap(
             if id2 in id2s_seen:
                 id2s_seen.remove(id2) # id2 will never be seen again; can remove it from the set to free up memory
             elif how in ('right', 'outer'):
-                yield None, None, interval2, value2
+                yield None, interval2, None, value2
 
         # Check for overlaps with remaining intervals in the deque
+        last_deque_interval2_exceeds_end1 = False
         for id2, (interval2, value2) in d:
             group2, start2, end2 = interval2
             if overlap_func(start1, end1, start2, end2):
-                yield interval1, value1, interval2, value2
+                yield interval1, interval2, value1, value2
                 id2s_seen.add(id2)
                 id1_seen = True
+            elif start2 >= end1 + max_distance:
+                last_deque_interval2_exceeds_end1 = True
+                break
 
         # Add new interval2s to the deque until one exceeds the end of interval1
         # - If a new interval2 overlap with interval1, yield them
@@ -291,21 +303,22 @@ def intervals_overlap(
         #       id2, interval2 = 0, (0, 5, 15)       ----------
         #       id2, interval2 = 1, (0, 6, 7)         -
         #       id2, interval2 = 2, (0, 19, 25)                    ------
-        id2, (interval2, value2) = _advance(iter2) or (None, (None, None))
-        while id2 is not None:
-            group2, start2, end2 = interval2
-            d.append((id2, (interval2, value2)))
-            if start2 >= end1 + max_distance:
-                break
-            elif overlap_func(start1, end1, start2, end2):
-                yield interval1, value1, interval2, value2
-                id2s_seen.add(id2)
-                id1_seen = True
-                id2, (interval2, value2) = _advance(iter2) or (None, (None, None))
+        if not last_deque_interval2_exceeds_end1:
+            id2, (interval2, value2) = _advance(iter2) or (None, (None, None))
+            while id2 is not None:
+                group2, start2, end2 = interval2
+                d.append((id2, (interval2, value2)))
+                if start2 >= end1 + max_distance:
+                    break
+                elif overlap_func(start1, end1, start2, end2):
+                    yield interval1, interval2, value1, value2
+                    id2s_seen.add(id2)
+                    id1_seen = True
+                    id2, (interval2, value2) = _advance(iter2) or (None, (None, None))
 
         # Advance the iterator for intervals1
         if not id1_seen and how in ('left', 'outer'):
-            yield interval1, value1, None, None
+            yield interval1, None, value1, None
         id1, (interval1, value1) = _advance(iter1) or (None, (None, None))
 
     if how in ('right', 'outer'):
@@ -313,28 +326,68 @@ def intervals_overlap(
         while d:
             id2, (interval2, value2) = d.popleft()
             if id2 not in id2s_seen:
-                yield None, None, interval2, value2
+                yield None, interval2, None, value2
 
         # process remaining intervals2 in iter2
         for id2, (interval2, value2) in iter2:
-            yield None, None, interval2, value2
+            yield None, interval2, None, value2
+
+
+def intervals_filter_by_overlap(
+    intervals1: collections.abc.Iterable[tuple[typing.Any, int, int]],
+    intervals2: collections.abc.Iterable[tuple[typing.Any, int, int]],
+    values1: collections.abc.Iterable | None = None,
+    how: str = "semi",
+    **kwargs
+) -> collections.abc.Iterable[tuple[tuple[typing.Any, int, int] | None, typing.Any, tuple[typing.Any, int, int] | None, typing.Any]]:
+    """
+    Filtering joins: filter intervals in intervals1 based on the presence or absence of overlaps in intervals2
+
+    This implementation is not optimally efficient, as it is a simple wrapper around intervals_overlap_grouped(), which
+    tries to consider all pairwise overlaps, whereas semi-join and anti-join effectively only care about the first
+    overlap.
+
+    Args
+    - intervals1: see intervals_overlap_grouped()
+    - intervals2: see intervals_overlap_grouped()
+    - values1: see intervals_overlap_grouped()
+    - how: which intervals to report
+        - 'semi': only intervals in intervals1 that overlap with intervals2
+        - 'anti': only intervals in intervals1 that do not overlap with intervals2
+    - **kwargs: passed to intervals_overlap_grouped()
+    """
+    if how == 'semi':
+        # add id to each group in intervals1 to track which intervals have been seen
+        def add_id(intervals):
+            for i, (group, start, end) in enumerate(intervals):
+                yield ((group, i), start, end)
+        last_id1_seen = -1
+        for interval1, _, value1, _ in intervals_overlap_grouped(add_id(intervals1), add_id(intervals2), values1=values1, how='inner', **kwargs):
+            (group, id1), start1, end1 = interval1
+            if id1 > last_id1_seen:
+                last_id1_seen = id1
+                yield (group, start1, end1), value1
+    elif how == 'anti':
+        for interval1, interval2, value1, _ in intervals_overlap_grouped(intervals1, intervals2, values1=values1, how='left', **kwargs):
+            if interval2 is None:
+                yield interval1, value1
+    else:
+        raise ValueError(f"how='{how}' not supported; must be 'semi' or 'anti'")
 
 
 def intervals_overlap_grouped(
     intervals1: collections.abc.Iterable[tuple[typing.Any, int, int]],
-    values1: collections.abc.Iterable,
     intervals2: collections.abc.Iterable[tuple[typing.Any, int, int]],
-    values2: collections.abc.Iterable,
-    overlap_func: collections.abc.Callable | None = None,
+    values1: collections.abc.Iterable | None = None,
+    values2: collections.abc.Iterable | None = None,
     how: str = "inner",
     **kwargs
-) -> collections.abc.Iterable[tuple[tuple[typing.Any, int, int] | None, typing.Any | None, tuple[typing.Any, int, int] | None, typing.Any | None]]:
+) -> collections.abc.Iterable[tuple[tuple[typing.Any, int, int] | None, typing.Any, tuple[typing.Any, int, int] | None, typing.Any]]:
     """
     Find overlapping intervals between two sets of intervals. Only intervals in the same group are compared.
 
     Args: see intervals_overlap()
     - Only additional assumptions are that intervals1 and intervals2 are sorted by group, start and end.
-    - **kwargs: passed to intervals_overlap()
 
     Returns: iterable of (interval1, value1, interval2, value2)
 
@@ -351,9 +404,9 @@ def intervals_overlap_grouped(
         df2 = pd.read_csv('input2.bed', sep='\t', header=None, names=COLS_BED6, dtype=dtypes).sort_values(['chrom', 'strand', 'start', 'end'])
         intervals_overlap_grouped(
             intervals1=zip(zip(df1['chrom'], df1['strand']), df1['start'], df1['end']),
+            intervals2=zip(zip(df2['chrom'], df2['strand']), df2['start'], df2['end']),
             values1=zip(df1['name'], df1['score']),
-            intervals1=zip(zip(df2['chrom'], df2['strand']), df2['start'], df2['end']),
-            values1=zip(df2['name'], df2['score']),
+            values2=zip(df2['name'], df2['score']),
             overlap_func=simple_overlap,
             how='inner'
         )
@@ -369,15 +422,19 @@ def intervals_overlap_grouped(
                         continue
                     chrom, start, end = line.split('\t')
                     yield (chrom, int(start), int(end))
-        intervals1, values1 = zip(*itertools.zip_longest(parse_bed3('input1.bed'), [], fillvalue=()))
-        intervals2, values2 = zip(*itertools.zip_longest(parse_bed3('input2.bed'), [], fillvalue=()))
-        for (interval1, _, interval2, _) in intervals_overlap_grouped(intervals1, values1, intervals2, values2, how='inner'):
+        intervals1 = parse_bed3('input1.bed')
+        intervals2 = parse_bed3('input2.bed')
+        for (interval1, interval2, _, _) in intervals_overlap_grouped(intervals1, intervals2, how='inner'):
             chrom1, start1, end1 = interval1
             chrom2, start2, end2 = interval2
             print(chrom1, max(start1, start2), min(end1, end2), sep='\t')
     """
     if how not in ('left', 'right', 'inner', 'outer'):
         raise ValueError(f"how='{how}' not supported; how must be one of 'left', 'right', 'inner', 'outer'")
+    if values1 is None:
+        values1 = itertools.repeat(None)
+    if values2 is None:
+        values2 = itertools.repeat(None)
 
     iter1 = zip(intervals1, values1) # yields (group1, start1, end1), value1
     iter2 = zip(intervals2, values2)
@@ -393,19 +450,19 @@ def intervals_overlap_grouped(
             # Group only exists in intervals1
             if how in ('left', 'outer'):
                 for interval1, value1 in sub_iter1:
-                    yield interval1, value1, None, None
+                    yield interval1, None, value1, None
             group1, sub_iter1 = _advance(grouped1) or (None, None)
         elif group1 is None or (group2 is not None and group2 < group1):
             # Group only exists in intervals2
             if how in ('right', 'outer'):
                 for interval2, value2 in sub_iter2:
-                    yield None, None, interval2, value2
+                    yield None, interval2, None, value2
             group2, sub_iter2 = _advance(grouped2) or (None, None)
         else: # group1 == group2, groups match
             # Process the matched groups using the helper function
             intervals1, values1 = zip(*sub_iter1)
             intervals2, values2 = zip(*sub_iter2)
-            yield from intervals_overlap(intervals1, values1, intervals2, values2, overlap_func, how, **kwargs)
+            yield from intervals_overlap(intervals1, intervals2, values1=values1, values2=values2, how=how, **kwargs)
 
             # Advance both group iterators
             group1, sub_iter1 = _advance(grouped1) or (None, None)
