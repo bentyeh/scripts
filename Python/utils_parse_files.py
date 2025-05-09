@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.append(Path(__file__).resolve(strict=True).parent)
+sys.path.append(str(Path(__file__).resolve(strict=True).parent))
 import utils, utils_files
 
 def _to_csv(x, col, folder_out, ext='', **kwargs):

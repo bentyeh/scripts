@@ -21,7 +21,7 @@ import Bio.SearchIO
 from tqdm import tqdm
 
 # add path of this file (e.g., a scripts directory) to sys.path
-sys.path.append(Path(__file__).resolve(strict=True).parent)
+sys.path.append(str(Path(__file__).resolve(strict=True).parent))
 import utils_files, utils_bio
 
 # region ------ UniProt

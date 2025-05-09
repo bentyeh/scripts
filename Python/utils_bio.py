@@ -1,7 +1,7 @@
 # add path of this file (e.g., a scripts directory) to sys.path
 import copy, io, os, re, subprocess, sys, tempfile, urllib.parse
 from pathlib import Path
-sys.path.append(Path(__file__).resolve(strict=True).parent)
+sys.path.append(str(Path(__file__).resolve(strict=True).parent))
 
 import numpy as np
 import pandas as pd

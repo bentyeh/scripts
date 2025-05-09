@@ -1,7 +1,7 @@
 from pathlib import Path
 import sys
 
-sys.path.append(Path(__file__).resolve(strict=True).parent)
+sys.path.append(str(Path(__file__).resolve(strict=True).parent))
 import utils_misc
 
 INTERVALS1 = [
