@@ -1031,10 +1031,12 @@ def extract_gtf_attribute(
         regex = r'(?:^| )' + attribute + r' "([^"]+)"'
         return s_attributes.str.extract(regex, expand=False)
     elif table_type == 'GFF':
-        regex = r'(?:^|;)' + attribute + r'([^,=;]+)'
+        regex = r'(?:^|;)' + attribute + r'=([^,=;]+)'
         # In GFF attributes, tags or values containing ",=;" characters are encoded using URL escape rules
         # see https://github.com/the-sequence-ontology/specifications/blob/master/gff3.md
-        return s_attributes.str.extract(regex, expand=False).map(urllib.parse.unquote)
+        extracted = s_attributes.str.extract(regex, expand=False)
+        extracted.loc[~extracted.isna()] = extracted.loc[~extracted.isna()].map(urllib.parse.unquote)
+        return extracted
     else:
         raise ValueError(f"table_type {table_type} not understood; must be either 'GTF' or 'GFF'")
 
