@@ -1,4 +1,4 @@
-import os, signal, subprocess, sys, threading
+import json, os, signal, subprocess, sys, threading
 
 def isint(s):
     '''
@@ -350,3 +350,76 @@ class ThreadPool:
         self.dt.join()
         for w in self.workers:
             w.join()
+
+
+class BashRunnerWithSharedEnvironment():
+    """
+    Run bash commands with persisent environment. Environment is stored to "env"
+    member between runs.
+
+    Usage:
+        runner = BashRunnerWithSharedEnvironment()
+        runner.run("export FOO=BAR")
+        runner.run("echo $FOO", capture_output=True, text=True).stdout.strip()  # value = 'BAR'
+    """
+    # adapted from https://stackoverflow.com/a/68339760
+
+    def __init__(self, env=None):
+        if env is None:
+            env = dict(os.environ)
+        self.env = env
+
+    def run(self, cmd: str, always_capture_env: bool=False, **kwargs) -> subprocess.CompletedProcess:
+        '''
+        Run a bash command, updating self.env with any changes to environment
+        variables made by the command.
+
+        Args
+        - cmd: bash command to run
+        - always_capture_env: if True, capture environment even if command fails
+        - **kwargs: additional arguments to subprocess.run
+
+        Returns: result from subprocess run
+        '''
+        fd_read, fd_write = os.pipe()
+        try:
+            write_env_pycode = "; ".join((
+                "import os",
+                "import json",
+                f"os.write({fd_write}, json.dumps(dict(os.environ)).encode())",
+            ))
+            write_env_shell_cmd = f"{sys.executable} -c '{write_env_pycode}'"
+            if always_capture_env:
+                # Append a trap to capture environment on exit
+                cmd = "function mytrap { " + write_env_shell_cmd + "; }; trap mytrap EXIT;\n" + cmd
+            else:
+                cmd += "\n" + write_env_shell_cmd
+            result = subprocess.run(
+                # bash -c: run the command string
+                # bash -e: analogous to set -e, exit on error
+                ["bash", "-ce", cmd],
+                pass_fds=[fd_write],
+                env=self.env,
+                **kwargs
+            )
+            os.close(fd_write)
+
+            data = b""
+            while True:
+                chunk = os.read(fd_read, 1024)  # read up to 1KB at a time
+                if not chunk:  # EOF
+                    break
+                data += chunk
+            if len(data) != 0:
+                # only update environment if we successfully read something
+                self.env = json.loads(data.decode())
+            return result
+        finally:
+            try:
+                os.close(fd_write)
+            except OSError:
+                pass
+            try:
+                os.close(fd_read)
+            except OSError:
+                pass
