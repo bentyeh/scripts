@@ -66,7 +66,10 @@ def get_available_cpus(job_scheduler=None):
     See https://docs.python.org/3/library/os.html#os.cpu_count.
     '''
     try:
-        return len(os.sched_getaffinity(0))
+        if sys.version_info >= (3, 13):
+            return os.process_cpu_count() # introduced in Python 3.13
+        else:
+            return len(os.sched_getaffinity(0))
     except:
         try:
             if job_scheduler and job_scheduler.upper() == 'SLURM':
