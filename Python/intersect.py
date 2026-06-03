@@ -509,3 +509,37 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+"""
+Original main prompt:
+
+Create a Python program intersect.py that determines whether 2 sets of genomic features intersect. The program should have the following interface:
+
+```
+python intersect.py [OPTIONS] -a <FILE_A.bam> -b <FILE_B.bed>
+```
+
+where `-a` takes a path to a template-coordinate-sorted SAM/BAM file and `-b` takes a path to a position-sorted BED file (may be gzip-compressed). Either `-a` or `-b` (but not both) can be passed the value `-` to read from standard input.
+
+By default (no options), the output is a BED3 file of intervals spanned by features in both file A and file B.
+
+The type of output can be modified with the following mutually-exclusive options:
+- `-wa`: Write the original entry in A if it overlaps with any entry in B (analogous to `bedtools intersect -wa -u`); each entry in A may only be output once. Compatible with `--output_type` values SAM (default), BAM, UBAM, BED3, BED6.
+- `-wb`: Write the original entry in B if it overlaps with any entry in A (no equivalent `bedtools intersect` command); each entry in B may only be output once. Restricted by `-f` and `-F`. If no `--output_type` is specified (default), the line from file B is copied verbatim into the output. Also compatible with `--output_type` BED3 or BED6.
+- `-wab`: Report the original entires in both A and B for each overlap in 6-column tab-delimited BEDPE format (chrom1, start1, end1, chrom2, start2, end2). Mutually exclusive with `--output_type`.
+- `-v`: Only report those entries in A that have no overlap in B. Restricted by `-f` and `-F`. Compatible with `--output_type` values SAM (default), BAM, UBAM, BED3, BED6.
+- `-c`: For each entry in A, report the number of hits in B. Reports 0 for A entries that have no overlap with B. Restricted by `-f` and `-F`. If `--output_type` is BED3 or BED6, report the count in an extra 4th or 7th column. If `--output_type` is SAM, BAM, or uncompressed BAM, report the count in the SAM tag specified by `--tag`.
+
+Modifier options:
+- `--output_type SAM|BAM|UBAM|BED3|BED6`: Output in SAM, BAM, uncompressed BAM, BED3, or BED6 format. If `-wa` or `-v` and `--output_type` is BED3 or BED6, then the interval chrom, start, end represents the fragment spanned by the input read pair. For BED6 output, use the read name for column 4, 0 for column 5, and strand for column 6. Strand should be `.` for fragments (paired reads), `+` for forward-aligned singleton reads, and `-` for reverse-aligned singleton reads.
+- `-f`:	Minimum overlap required as a fraction of A. Default is 1E-9 (i.e., 1 bp).
+- `-F`: Minimum overlap required as a fraction of B. Default is 1E-9 (i.e., 1 bp).
+- `--tag`: name of SAM tag to report count when `-c` is used. Defaults to `XC`.
+
+This interface is purposefully reminiscent of (but not identical to) `bedtools intersect` (see #fetch https://bedtools.readthedocs.io/en/latest/content/tools/intersect.html.) However, unlike `bedtools intersect`, which always treats reads as single-ended, this program supports both paired-end and single-end reads in the BAM file supplied by `-a`. Specifically, when given paired-end reads, consider overlaps between entries in B and the *fragments* (aka templates) spanned by each pair of reads in A. If a read is paired, then it must be properly paired (both mates mapped on the same chromosome in FR orientation). Read pairs in the wrong orientation, read pairs mapped to different chromosomes, and unmapped reads are ignored, and a warning message should be printed to standard error when the program is complete tallying the number of ignored read pairs and unmapped reads. Furthermore, the program assumes that both input files are already sorted.
+
+The implementation should take advantage of the assumption that both input files are already sorted and perform interval comparison in a "streaming" manner where only one entry (2 rows from file A, if `--paired`) from each file needs to be loaded into memory at a given time for comparison. As new entries are read, the program should validate that the entries are indeed sorted. Chromosomes do not need to be lexicographically sorted; they just have to be collated in the same order across files A and B. Use pysam to read/write BAM files. Use standard Python libraries and commonly used scientfic computing libraries, like numpy and pandas, where relevant.
+
+Do not use any custom Python libraries from this repository. Assume Python version >= 3.12 to simplify type hints. For example, you can use `list[pysam.AlignedSegment]` instead of `List[pysam.AlignedSegment]`.
+"""
